@@ -8,6 +8,8 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "requests (>=2.32.4,<3.0.0)",
+    "python-dotenv (>=1.1.1,<2.0.0)"
 ]
 
 
@@ -25,6 +27,7 @@ isort = "^6.0.1"
 
 [tool.poetry.group.dev.dependencies]
 pre-commit = "^3.7.0"
+types-requests = "^2.32.4.20250809"
 
 
 [tool.poetry.group.test.dependencies]
