@@ -5,17 +5,29 @@ from job_search.utils.logger_setup import get_logger
 logger = get_logger(__name__)
 
 
+ALLOWED_FIELDS = [
+    "name_vacancy",
+    "url_vacancy",
+    "alternate_url",
+    "salary_from",
+    "salary_to",
+    "currency",
+    "description",
+]
+
+
 class Vacancy:
     """
     Класс для создания объектов из вакансий полученных от АПИ.
     """
 
-    __slots__ = ("name_vacancy", "url_vacancy", "salary_from", "salary_to", "currency", "description")
+    __slots__ = ("name_vacancy", "url_vacancy", "alternate_url", "salary_from", "salary_to", "currency", "description")
 
     def __init__(
         self,
         name_vacancy: str,
         url_vacancy: str,
+        alternate_url: str,
         salary_from: int | None,
         salary_to: int | None,
         currency: str,
@@ -34,6 +46,7 @@ class Vacancy:
 
         self.name_vacancy = name_vacancy
         self.url_vacancy = url_vacancy
+        self.alternate_url = alternate_url
         self.salary_from = salary_from
         self.salary_to = salary_to
         self.currency = currency
@@ -123,19 +136,28 @@ class Vacancy:
         :return: Новый экземпляр класса Vacancy.
         """
 
-        name_vacancy = data.get("name", "Название не указано")
-        url_vacancy = data.get("area", {}).get("url", "URL не указан")
+        # Название вакансии
+        name_vacancy = (data.get("name") or "Название не указано").strip()
 
-        description_list = [
-            data.get("snippet", {}).get("requirement", "Описание не указано"),
-            data.get("snippet", {}).get("responsibility", "Ответственность не указано"),
+        # API-ссылка на вакансию (для логики)
+        raw_url = data.get("url")
+        url_vacancy = raw_url.strip() if isinstance(raw_url, str) else ""
+
+        # Человекочитаемая ссылка (для отображения)
+        raw_alt_url = data.get("alternate_url")
+        alternate_url = raw_alt_url.strip() if isinstance(raw_alt_url, str) else ""
+
+        description_parts = [
+            data.get("snippet", {}).get("requirement"),
+            data.get("snippet", {}).get("responsibility"),
         ]
-        description = " ".join(desc for desc in description_list if desc) or "Описание не указано"
+        description_parts = [part.strip() for part in description_parts if isinstance(part, str) and part.strip()]
+        description = " ".join(description_parts) if description_parts else "Описание не указано"
 
         salary = data.get("salary")
         salary_from, salary_to, currency = cls._parse_salary(salary_data=salary)
 
-        return cls(name_vacancy, url_vacancy, salary_from, salary_to, currency, description)
+        return cls(name_vacancy, url_vacancy, alternate_url, salary_from, salary_to, currency, description)
 
     @staticmethod
     def _parse_salary(salary_data: dict | None) -> tuple[int | None, int | None, str]:
