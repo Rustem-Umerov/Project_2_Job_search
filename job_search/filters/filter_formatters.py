@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 
 class BaseFilterFormatter(ABC):
@@ -8,7 +8,7 @@ class BaseFilterFormatter(ABC):
     """
 
     @abstractmethod
-    def build_from(self, answers: Dict[str, Any]) -> Dict[str, Any]:
+    def build_from(self, answers: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
         Преобразует словарь answers в формат, ожидаемый конкретным API.
         """
