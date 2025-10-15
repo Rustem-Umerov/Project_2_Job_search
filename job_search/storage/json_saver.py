@@ -4,9 +4,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from job_search.filters.vacancy_filter import VacancyFilter, normalize_filter
 from job_search.models.vacancy import ALLOWED_FIELDS, Vacancy
 from job_search.storage.base_storage import VacancyStorage
-from job_search.utils.filters import VacancyFilter, normalize_filter
 from job_search.utils.logger_setup import get_logger
 
 logger = get_logger(__name__)
