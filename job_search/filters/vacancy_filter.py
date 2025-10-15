@@ -67,6 +67,11 @@ class VacancyFilter:
 
         return self._match_field("url_vacancy", vacancy)
 
+    def _match_alternate_url(self, vacancy: Vacancy) -> bool:
+        """Фильтрация по alternate_url вакансии."""
+
+        return self._match_field("alternate_url", vacancy)
+
     def _match_description(self, vacancy: Vacancy) -> bool:
         """Фильтрация по описанию вакансии."""
 
