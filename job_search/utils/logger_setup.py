@@ -39,7 +39,7 @@ def parse_log_level(level: str | int) -> int:
 def get_logger(
     name: str,
     log_file: Optional[str] = None,
-    fmt: str = "[%(asctime)s] %(levelname)s - %(name)s - %(message)s",
+    fmt: str = "[%(asctime)s] %(levelname)s - %(name)s - %(funcName)s - %(message)s",
     level: str = "INFO",
 ) -> logging.Logger:
     """
