@@ -1,6 +1,7 @@
-from typing import Any
+from typing import Any, Optional
 
 from job_search.utils.logger_setup import get_logger
+from job_search.utils.vacancy_fields_validators import norm_int, norm_str
 
 logger = get_logger(__name__)
 
@@ -21,6 +22,14 @@ class Vacancy:
     Класс для создания объектов из вакансий полученных от АПИ.
     """
 
+    name_vacancy: str
+    url_vacancy: str
+    alternate_url: str
+    salary_from: Optional[int]
+    salary_to: Optional[int]
+    currency: str
+    description: str
+
     __slots__ = ("name_vacancy", "url_vacancy", "alternate_url", "salary_from", "salary_to", "currency", "description")
 
     def __init__(
@@ -28,8 +37,8 @@ class Vacancy:
         name_vacancy: str,
         url_vacancy: str,
         alternate_url: str,
-        salary_from: int | None,
-        salary_to: int | None,
+        salary_from: Optional[int],
+        salary_to: Optional[int],
         currency: str,
         description: str,
     ) -> None:
@@ -38,6 +47,7 @@ class Vacancy:
 
         :param name_vacancy: Название вакансии.
         :param url_vacancy: Ссылка на вакансии.
+        :param alternate_url: Альтернативная ссылка на вакансии.
         :param salary_from: Минимальная заработная плата по вакансии.
         :param salary_to: Максимальная заработная плата по вакансии.
         :param currency: Валюта заработной платы по вакансии.
@@ -55,21 +65,13 @@ class Vacancy:
     def __str__(self) -> str:
         """
         Возвращает строковое представление объекта Vacancy.
-        Формат включает название вакансии, зарплату, ссылку и краткое описание.
+        Формат включает название вакансии и зарплату.
 
         Пример:
         Python Developer — от 120 000 до 180 000 RUR
-        Ссылка: https://hh.ru/vacancy/123456
-        Описание: Требуется опыт работы с Django. Ответственность за разработку backend.
-
-        :return: Строка с краткой информацией о вакансии.
         """
 
-        return (
-            f"{self.name_vacancy} — {self.salary_str}\n"
-            f"Ссылка: {self.url_vacancy}\n"
-            f"Описание: {self.description}"
-        )
+        return f"{self.name_vacancy} — {self.salary_str}"
 
     def __repr__(self) -> str:
         """
@@ -111,6 +113,21 @@ class Vacancy:
             return NotImplemented
 
         return self.get_salary_value() < other.get_salary_value()
+
+    def details(self) -> str:
+        """
+        Подробное строковое представление вакансии.
+        Включает все доступные поля.
+        """
+
+        parts = [
+            f"Название: {self.name_vacancy}",
+            f"Зарплата: {self.salary_str}",
+            f"Ссылка: {self.url_vacancy or 'не указана'}",
+            f"Альтернативная ссылка: {self.alternate_url or 'не указана'}",
+            f"Описание: {self.description or 'не указано'}",
+        ]
+        return "\n".join(parts)
 
     def get_salary_value(self) -> int:
         """
@@ -281,3 +298,56 @@ class Vacancy:
             f"Список с пропущенными словарями: {skipped_items}."
         )
         return obj_list_result
+
+    def to_dict(self) -> dict:
+        """
+        Преобразует объект Vacancy в словарь по доступным полям из ALLOWED_FIELDS.
+        Применяет нормализацию значений, задаёт дефолты для пустых полей
+        и корректирует диапазон зарплаты, если from > to.
+
+        :return: Словарь с нормализованными данными, готовый для JSON.
+        """
+
+        vacancy_dict: dict[str, Any] = {}
+        salary_from: Optional[int] = None
+        salary_to: Optional[int] = None
+
+        for field_name in ALLOWED_FIELDS:
+            obj_vacancy: Any = getattr(self, field_name, None)
+            logger.debug(f"Обработка поля '{field_name}': исходное значение = {obj_vacancy!r}")
+
+            if field_name in ("name_vacancy", "url_vacancy", "alternate_url", "currency", "description"):
+                if field_name == "description":
+                    field_value = norm_str(obj_vacancy) or "Описание не указано"
+                else:
+                    field_value = norm_str(obj_vacancy) or ""
+
+            elif field_name == "salary_from":
+                salary_from = norm_int(obj_vacancy) if obj_vacancy is not None else None
+                field_value = salary_from  # type: ignore[assignment]
+
+            elif field_name == "salary_to":
+                salary_to = norm_int(obj_vacancy) if obj_vacancy is not None else None
+                field_value = salary_to  # type: ignore[assignment]
+
+            else:
+                logger.warning(f"Поле {field_name} не обработано — нет нормализатора")
+                continue
+
+            logger.debug(f"Поле '{field_name}': нормализованное значение = {field_value!r}")
+            vacancy_dict[field_name] = field_value
+
+        if salary_from is not None and salary_to is not None and salary_from > salary_to:
+            logger.warning(
+                f"Корректировка диапазона зарплаты: salary_from={salary_from}, salary_to={salary_to} → меняем местами"
+            )
+            vacancy_dict["salary_from"], vacancy_dict["salary_to"] = salary_to, salary_from
+            logger.debug(
+                f"После корректировки: salary_from={vacancy_dict['salary_from']}, "
+                f"salary_to={vacancy_dict['salary_to']}"
+            )
+
+        cleaned = {k: v for k, v in vacancy_dict.items() if v is not None}
+        logger.debug(f"Результат сериализации: {cleaned}")
+
+        return cleaned
