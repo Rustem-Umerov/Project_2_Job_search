@@ -40,15 +40,22 @@ class VacancyStorage(ABC):
         pass
 
     @abstractmethod
-    def get_vacancies(self, filter: Optional[dict] = None) -> list[Vacancy]:
+    def get_vacancies(self) -> list[Vacancy]:
         """
-        Возвращает список вакансий из хранилища, с возможной фильтрацией.
+        Возвращает список всех вакансий из хранилища без фильтрации.
+        :return: Список объектов Vacancy.
+        """
+        pass
 
-        Фильтр — это словарь с ключами, соответствующими атрибутам вакансии (например, "currency", "salary_from").
-        Реализация должна применить фильтр, если он указан, и вернуть только подходящие вакансии.
+    @abstractmethod
+    def apply_filter(self, filter_dict: Optional[dict] = None) -> list[Vacancy]:
+        """
+        Применяет фильтр к вакансиям в хранилище.
 
-        :param filter: Словарь с условиями фильтрации (опционально).
+        Фильтр — это словарь с ключами, соответствующими атрибутам вакансии
+        (например, "currency", "salary_from").
+
+        :param filter_dict: Словарь с условиями фильтрации (опционально).
         :return: Список объектов Vacancy, соответствующих фильтру.
         """
-
         pass
