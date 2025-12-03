@@ -1,9 +1,16 @@
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Literal, Optional, Union
 
 from job_search.filters.filter_formatters import BaseFilterFormatter
 from job_search.filters.preview_renderer import FilterPreviewRenderer
-from job_search.utils.exceptions import FilterCancelled
+from job_search.utils.exceptions import FilterCancelled, UnexpectedStatusError
 from job_search.utils.logger_setup import get_logger
+from job_search.utils.vacancy_fields_validators import (
+    validate_currency,
+    validate_name_and_description,
+    validate_salary,
+    validate_url,
+    validate_user_input,
+)
 
 logger = get_logger(__name__)
 
@@ -26,6 +33,86 @@ class InteractiveFilterInput:
         self._allowed_currencies = allowed_currencies or ALLOWED_CURRENCIES
         # Абстракция ввода/вывода.
         self._io = io or {"input": input, "output": print}
+
+    def run(self) -> Optional[Dict[str, Any]]:
+        """Запускает полный процесс интерактивного сбора фильтра."""
+
+        logger.info("Старт процесса интерактивной сборки фильтра (run).")
+        self.start()
+
+        steps = [
+            self.ask_salary_from,
+            self.ask_salary_to,
+            self.ask_currency,
+            self.ask_description,
+            self.ask_name_vacancy,
+            self.ask_url,
+            self.ask_use_alternate_url,
+            self.ask_alternate_url,
+        ]
+        # индекс текущего шага
+        idx = 0
+        logger.debug("Инициализирован список шагов: %s", [fn.__name__ for fn in steps])
+
+        try:
+            while idx < len(steps):
+                current_step = steps[idx]
+                logger.info("Выполняется шаг %s (idx=%d).", current_step.__name__, idx)
+
+                result = current_step()
+                logger.debug("Шаг %s завершён. Результат: %r", current_step.__name__, result)
+
+                # Обработка возврата назад
+                if result == "back":
+                    if idx > 0:
+                        idx -= 1
+                        logger.info("Возврат на предыдущий шаг. Новый индекс: %d (%s).", idx, steps[idx].__name__)
+                    else:
+                        logger.info("Пользователь запросил 'назад' на первом шаге. Остаёмся на месте.")
+                    continue
+
+                # Условие для ask_use_alternate_url
+                if current_step is self.ask_use_alternate_url:
+                    if result is False:
+                        logger.info("Пользователь отказался от alternate URL. Пропускаем шаг ask_alternate_url.")
+                        idx += 2  # пропустить следующий шаг
+                        continue
+                    elif result is True:
+                        logger.info("Пользователь согласился указать alternate URL. Переходим к следующему шагу.")
+                        idx += 1
+                        continue
+                    else:
+                        # На всякий случай: если вернули None (например, пропуск) — идём дальше обычным образом
+                        logger.debug("Шаг ask_use_alternate_url вернул %r. Переходим к следующему шагу.", result)
+
+                # Обычный переход к следующему шагу
+                idx += 1
+                logger.debug("Переход к следующему шагу. Новый индекс: %d.", idx)
+
+        except FilterCancelled:
+            logger.warning("Фильтр отменён пользователем во время выполнения шага %s.", steps[idx].__name__)
+            self._io["output"]("❌ Сборка фильтра отменена.")
+            return None
+
+        # Все шаги пройдены — показываем превью и спрашиваем подтверждение
+        logger.info("Все шаги сборки фильтра завершены. Переход к предварительному обзору.")
+        self.preview()
+
+        logger.info("Переход к финальному подтверждению фильтра.")
+        try:
+            filter_block = self.confirm()
+            # confirm может вернуть None (например, если пользователь вернулся, изменил и вновь отменил)
+            if filter_block is None:
+                logger.info("Фильтр не был подтверждён пользователем (confirm вернул None).")
+                return None
+
+            logger.info("Фильтр подтверждён пользователем. Возвращаем сформированный блок фильтра.")
+            return filter_block
+
+        except FilterCancelled:
+            logger.warning("Фильтр отменён пользователем на финальном этапе подтверждения.")
+            self._io["output"]("❌ Сборка фильтра отменена на этапе подтверждения.")
+            return None
 
     def start(self) -> None:
         """Выводит приветствие, правила и список доступных полей фильтра."""
@@ -74,42 +161,44 @@ class InteractiveFilterInput:
             self._io["output"]("Введите минимальную зарплату (например: 100000).")
             self._io["output"]("Можно указать дробное значение, например: 100000.50")
             self._io["output"]("")
-            self._io["output"]("Оставьте пустым, чтобы пропустить этот шаг.")
-            self._io["output"]("Введите 'отмена', чтобы прервать сборку фильтра.")
+            self._print_common_instructions(first_step=True)
             self._io["output"]("")
 
             user_input = self._io["input"]("→ ").strip()
-            logger.debug("Ответ пользователя на шаг 'минимальная зарплата': '%s'", user_input)
-
-            if user_input.lower() == "отмена":
-                logger.warning("Пользователь отменил сборку фильтра на шаге минимальной зарплаты.")
-                self._io["output"]("Сборка фильтра отменена")
-                raise FilterCancelled("Фильтр отменён пользователем.")
-
-            if user_input == "":
-                logger.info("Пользователь пропустил шаг минимальной зарплаты.")
-                self._io["output"]("Минимальная зарплата не указана. Переходим к следующему шагу.")
-                return
-
-            if user_input.lower() == "назад":
-                logger.info("Пользователь попытался вернуться назад на первом шаге.")
-                self._io["output"]("Вы уже на первом шаге. Назад идти некуда.")
+            status, value = validate_user_input(
+                io=self._io, user_input=user_input, step="минимальная зарплата", first_step=True
+            )
+            if status == "skip":
+                return None
+            elif status == "back":
                 continue
+            elif status == "ok":
+                try:
+                    salary_from = validate_salary(self._io, user_input)
+                    if salary_from is None:
+                        # Ошибка преобразования → остаёмся в цикле
+                        continue
+                    if salary_from > 0:
+                        self._answers["salary_from"] = salary_from
+                        logger.info("Минимальная зарплата установлена: %s", salary_from)
+                        self._io["output"](f"Минимальная зарплата установлена: {salary_from}")
+                        return
+                    else:
+                        logger.warning("Ошибка: введена неположительная зарплата: %s", salary_from)
+                        self._io["output"]("❌ Ошибка: зарплата должна быть больше нуля. Попробуйте ещё раз.")
+                except ValueError:
+                    logger.warning("Ошибка преобразования зарплаты: '%s' не является числом.", user_input)
+                    self._io["output"]("❌ Ошибка: зарплата должна быть числом. Попробуйте ещё раз.")
+            else:
+                raise UnexpectedStatusError(f"Неожиданный статус: {status}")
 
-            try:
-                salary_from = float(user_input)
-                salary_from = int(salary_from) if salary_from.is_integer() else salary_from
-                if salary_from > 0:
-                    self._answers["salary_from"] = salary_from
-                    logger.info("Минимальная зарплата установлена: %s", salary_from)
-                    self._io["output"](f"Минимальная зарплата установлена: {salary_from}")
-                    return
-                else:
-                    logger.warning("Ошибка: введена неположительная зарплата: %s", salary_from)
-                    self._io["output"]("❌ Ошибка: зарплата должна быть больше нуля. Попробуйте ещё раз.")
-            except ValueError:
-                logger.warning("Ошибка преобразования зарплаты: '%s' не является числом.", user_input)
-                self._io["output"]("❌ Ошибка: зарплата должна быть числом. Попробуйте ещё раз.")
+    def _print_common_instructions(self, first_step: bool = False) -> None:
+        """Выводит стандартные инструкции для любого шага."""
+
+        self._io["output"]("Оставьте пустым, чтобы пропустить этот шаг.")
+        self._io["output"]("Введите 'отмена', чтобы прервать сборку фильтра.")
+        if not first_step:
+            self._io["output"]("Введите 'назад', чтобы вернуться на шаг назад.")
 
     def ask_salary_to(self) -> Optional[str]:
         """Запрашивает максимальную зарплату, валидирует ввод и сохраняет результат."""
@@ -121,55 +210,48 @@ class InteractiveFilterInput:
             self._io["output"]("Введите максимальную зарплату (например: 100000).")
             self._io["output"]("Можно указать дробное значение, например: 100000.50")
             self._io["output"]("")
-            self._io["output"]("Оставьте пустым, чтобы пропустить этот шаг.")
-            self._io["output"]("Введите 'назад', чтобы вернуться на шаг назад.")
-            self._io["output"]("Введите 'отмена', чтобы прервать сборку фильтра.")
+            self._print_common_instructions(first_step=False)
             self._io["output"]("")
 
             user_input = self._io["input"]("→ ").strip()
-            logger.debug("Ответ пользователя на шаг 'максимальная зарплата': '%s'", user_input)
-
-            if user_input.lower() == "отмена":
-                logger.warning("Пользователь отменил сборку фильтра на шаге максимальной зарплаты.")
-                self._io["output"]("Сборка фильтра отменена")
-                raise FilterCancelled("Фильтр отменён пользователем.")
-
-            if user_input == "":
-                logger.info("Пользователь пропустил шаг максимальной зарплаты.")
-                self._io["output"]("Максимальная зарплата не указана. Переходим к следующему шагу.")
+            status, value = validate_user_input(
+                io=self._io, user_input=user_input, step="максимальная зарплата", first_step=False
+            )
+            if status == "skip":
                 return None
-
-            if user_input.lower() == "назад":
-                logger.info("Пользователь вернулся на шаг назад из запроса максимальной зарплаты.")
-                self._io["output"]("Вы возвращаетесь на шаг назад.")
+            elif status == "back":
                 return "back"
+            elif status == "ok":
+                try:
+                    salary_to = validate_salary(self._io, user_input)
+                    if salary_to is None:
+                        # Ошибка преобразования → остаёмся в цикле
+                        continue
 
-            try:
-                salary_to = float(user_input)
-                salary_to = int(salary_to) if salary_to.is_integer() else salary_to
+                    if salary_to <= 0:
+                        logger.warning("Введена неположительная максимальная зарплата: %s", salary_to)
+                        self._io["output"]("❌ Ошибка: зарплата должна быть положительным числом. Попробуйте ещё раз.")
+                        continue
 
-                if salary_to <= 0:
-                    logger.warning("Введена неположительная максимальная зарплата: %s", salary_to)
-                    self._io["output"]("❌ Ошибка: зарплата должна быть положительным числом. Попробуйте ещё раз.")
-                    continue
+                    salary_from = self._answers.get("salary_from")
+                    if salary_from is not None and salary_to < salary_from:
+                        logger.warning("Максимальная зарплата (%s) меньше минимальной (%s).", salary_to, salary_from)
+                        self._io["output"](
+                            f"❌ Ошибка: максимальная зарплата ({salary_to}) меньше минимальной ({salary_from})."
+                        )
+                        self._io["output"]("Попробуйте ввести другое значение или пропустите шаг.")
+                        continue
 
-                salary_from = self._answers.get("salary_from")
-                if salary_from is not None and salary_to < salary_from:
-                    logger.warning("Максимальная зарплата (%s) меньше минимальной (%s).", salary_to, salary_from)
-                    self._io["output"](
-                        f"❌ Ошибка: максимальная зарплата ({salary_to}) меньше минимальной ({salary_from})."
-                    )
-                    self._io["output"]("Попробуйте ввести другое значение или пропустите шаг.")
-                    continue
+                    self._answers["salary_to"] = salary_to
+                    logger.info("Максимальная зарплата установлена: %s", salary_to)
+                    self._io["output"](f"Максимальная зарплата установлена: {salary_to}")
+                    return None
 
-                self._answers["salary_to"] = salary_to
-                logger.info("Максимальная зарплата установлена: %s", salary_to)
-                self._io["output"](f"Максимальная зарплата установлена: {salary_to}")
-                return None
-
-            except ValueError:
-                logger.warning("Ошибка преобразования зарплаты: '%s' не является числом.", user_input)
-                self._io["output"]("❌ Ошибка: зарплата должна быть числом. Попробуйте ещё раз.")
+                except ValueError:
+                    logger.warning("Ошибка преобразования зарплаты: '%s' не является числом.", user_input)
+                    self._io["output"]("❌ Ошибка: зарплата должна быть числом. Попробуйте ещё раз.")
+            else:
+                raise UnexpectedStatusError(f"Неожиданный статус: {status}")
 
     def ask_currency(self) -> Optional[str]:
         """Запрашивает валюту, валидирует ввод и сохраняет результат."""
@@ -183,42 +265,31 @@ class InteractiveFilterInput:
             self._io["output"]("Введите валюту.")
             self._io["output"](f"Можете указать одну из: {allowed}")
             self._io["output"]("")
-            self._io["output"]("Оставьте пустым, чтобы пропустить этот шаг.")
-            self._io["output"]("Введите 'назад', чтобы вернуться на шаг назад.")
-            self._io["output"]("Введите 'отмена', чтобы прервать сборку фильтра.")
+            self._print_common_instructions(first_step=False)
             self._io["output"]("")
 
             user_input = self._io["input"]("→ ").strip()
-            logger.debug("Ответ пользователя на шаг 'валюта': '%s'", user_input)
-
-            if user_input.lower() == "отмена":
-                logger.warning("Пользователь отменил сборку фильтра на шаге валюты.")
-                self._io["output"]("Сборка фильтра отменена")
-                raise FilterCancelled("Фильтр отменён пользователем.")
-
-            if user_input == "":
-                logger.info("Пользователь пропустил шаг валюты.")
-                self._io["output"]("Валюта не указана. Переходим к следующему шагу.")
+            status, value = validate_user_input(
+                io=self._io, user_input=user_input, step="валюта зарплаты", first_step=False
+            )
+            if status == "skip":
                 return None
-
-            if user_input.lower() == "назад":
-                logger.info("Пользователь вернулся на шаг назад из запроса валюты.")
-                self._io["output"]("Вы возвращаетесь на шаг назад.")
+            elif status == "back":
                 return "back"
-
-            currency = user_input.upper()
-            logger.debug("Преобразованная валюта: '%s'", currency)
-
-            if currency in self._allowed_currencies:
-                self._answers["currency"] = currency
-                logger.info("Валюта установлена: %s", currency)
-                self._io["output"](f"Валюта установлена: {currency}")
-                return None
+            elif status == "ok":
+                currency = validate_currency(user_input, self._allowed_currencies)
+                if currency:
+                    self._answers["currency"] = currency
+                    logger.info("Валюта установлена: %s", currency)
+                    self._io["output"](f"Валюта установлена: {currency}")
+                    return None
+                else:
+                    logger.warning("Валюта '%s' не поддерживается. Допустимые: %s", user_input, allowed)
+                    self._io["output"](f"❌ Валюта '{user_input}' не поддерживается. Допустимые варианты: {allowed}")
+                    self._io["output"]("Попробуйте ввести другую валюту или пропустите шаг.")
+                    continue
             else:
-                logger.warning("Валюта '%s' не поддерживается. Допустимые: %s", currency, allowed)
-                self._io["output"](f"❌ Валюта '{currency}' не поддерживается. Допустимые варианты: {allowed}")
-                self._io["output"]("Попробуйте ввести другую валюту или пропустите шаг.")
-                continue
+                raise UnexpectedStatusError(f"Неожиданный статус: {status}")
 
     def ask_description(self) -> Optional[str]:
         """Запрашивает ключевые слова для описания вакансии, валидирует ввод и сохраняет результат."""
@@ -230,39 +301,24 @@ class InteractiveFilterInput:
             self._io["output"]("Введите ключевые слова для описания вакансии")
             self._io["output"]("Например: Python, удалённо, Flask")
             self._io["output"]("")
-            self._io["output"]("Оставьте пустым, чтобы пропустить этот шаг.")
-            self._io["output"]("Введите 'назад', чтобы вернуться на шаг назад.")
-            self._io["output"]("Введите 'отмена', чтобы прервать сборку фильтра.")
+            self._print_common_instructions(first_step=False)
             self._io["output"]("")
 
             raw_input = self._io["input"]("→ ")
-            user_input = raw_input.strip()
-            logger.debug("Ответ пользователя на шаг 'описание': raw='%s', stripped='%s'", raw_input, user_input)
-
-            if user_input.lower() == "отмена":
-                logger.warning("Пользователь отменил сборку фильтра на шаге описания.")
-                self._io["output"]("Сборка фильтра отменена.")
-                raise FilterCancelled("Фильтр отменён пользователем.")
-
-            if user_input.lower() == "назад":
-                logger.info("Пользователь вернулся на шаг назад из запроса описания.")
-                self._io["output"]("Вы возвращаетесь на шаг назад.")
-                return "back"
-
-            if raw_input == "":
-                logger.info("Пользователь пропустил шаг описания.")
-                self._io["output"]("Описание не указано. Переходим к следующему шагу.")
+            status, value = validate_name_and_description(io=self._io, raw_input=raw_input, step="описание")
+            if status == "skip":
                 return None
-
-            if user_input == "":
-                logger.warning("Ввод состоит только из пробелов. Описание не принято.")
-                self._io["output"]("❌ Описание не может состоять только из пробелов. Попробуйте ещё раз.")
+            elif status == "error":
                 continue
-
-            self._answers["contains_description"] = user_input
-            logger.info("Описание вакансии установлено: '%s'", user_input)
-            self._io["output"](f"Описание установлено: {user_input}")
-            return None
+            elif status == "back":
+                return "back"
+            elif status == "ok":
+                self._answers["contains_description"] = value
+                logger.info("Описание вакансии установлено: '%s'", value)
+                self._io["output"](f"Описание установлено: {value}")
+                return None
+            else:
+                raise UnexpectedStatusError(f"Неожиданный статус: {status}")
 
     def ask_name_vacancy(self) -> Optional[str]:
         """Запрашивает ключевые слова для названия вакансии, валидирует ввод и сохраняет результат."""
@@ -274,98 +330,29 @@ class InteractiveFilterInput:
             self._io["output"]("Введите ключевые слова, которые должны присутствовать в названии вакансии.")
             self._io["output"]("Например: Python, аналитик, удалённо")
             self._io["output"]("Поиск будет по частичному совпадению.")
-            self._io["output"]("Оставьте пустым, чтобы пропустить этот шаг.")
-            self._io["output"]("Введите 'назад', чтобы вернуться на шаг назад.")
-            self._io["output"]("Введите 'отмена', чтобы прервать сборку фильтра.")
+            self._print_common_instructions(first_step=False)
             self._io["output"]("")
 
             raw_input = self._io["input"]("→ ")
-            user_input = raw_input.strip()
-            logger.debug(
-                "Ответ пользователя на шаг 'название вакансии': raw='%s', stripped='%s'", raw_input, user_input
-            )
-
-            if user_input.lower() == "отмена":
-                logger.warning("Пользователь отменил сборку фильтра на шаге названия вакансии.")
-                self._io["output"]("Сборка фильтра отменена.")
-                raise FilterCancelled("Фильтр отменён пользователем.")
-
-            if user_input.lower() == "назад":
-                logger.info("Пользователь вернулся на шаг назад из запроса названия вакансии.")
-                self._io["output"]("Вы возвращаетесь на шаг назад.")
-                return "back"
-
-            if raw_input == "":
-                logger.info("Пользователь пропустил шаг названия вакансии.")
-                self._io["output"]("Название вакансии не указано. Переходим к следующему шагу.")
+            status, value = validate_name_and_description(io=self._io, raw_input=raw_input, step="название вакансии")
+            if status == "skip":
                 return None
-
-            if user_input == "":
-                logger.warning("Ввод состоит только из пробелов. Название вакансии не принято.")
-                self._io["output"]("❌ Название не может состоять только из пробелов. Попробуйте ещё раз.")
+            elif status == "error":
                 continue
-
-            self._answers["contains_name"] = user_input
-            logger.info("Название вакансии установлено: '%s'", user_input)
-            self._io["output"](f"Название вакансии должно содержать: {user_input}")
-            return None
+            elif status == "back":
+                return "back"
+            elif status == "ok":
+                self._answers["contains_name"] = value
+                logger.info("Название вакансии установлено: '%s'", value)
+                self._io["output"](f"Название вакансии должно содержать: {value}")
+                return None
+            else:
+                raise UnexpectedStatusError(f"Неожиданный статус: {status}")
 
     def ask_url(self) -> Optional[str]:
         """Запрашивает URL или список URL, валидирует ввод и сохраняет результат."""
 
-        logger.info("Запрос URL начат.")
-
-        while True:
-            self._io["output"]("")
-            self._io["output"]("Введите URL или список URL через запятую.")
-            self._io["output"]("Например: https://hh.ru/vacancy/123, https://hh.ru/vacancy/456")
-            self._io["output"]("Если указано несколько — будет использован оператор in.")
-            self._io["output"]("Оставьте пустым, чтобы пропустить этот шаг.")
-            self._io["output"]("Введите 'назад', чтобы вернуться на шаг назад.")
-            self._io["output"]("Введите 'отмена', чтобы прервать сборку фильтра.")
-            self._io["output"]("")
-
-            raw_input = self._io["input"]("→ ").strip()
-            logger.debug("Ответ пользователя на шаг 'URL': '%s'", raw_input)
-
-            if raw_input.lower() == "отмена":
-                logger.warning("Пользователь отменил сборку фильтра на шаге URL.")
-                self._io["output"]("Сборка фильтра отменена.")
-                raise FilterCancelled("Фильтр отменён пользователем.")
-
-            if raw_input.lower() == "назад":
-                logger.info("Пользователь вернулся на шаг назад из запроса URL.")
-                self._io["output"]("Вы возвращаетесь на шаг назад.")
-                return "back"
-
-            if raw_input == "":
-                logger.info("Пользователь пропустил шаг URL.")
-                self._io["output"]("URL не указан. Переходим к следующему шагу.")
-                return None
-
-            urls = [url.strip() for url in raw_input.split(",") if url.strip()]
-            logger.debug("Обработанный список URL: %s", urls)
-
-            if not urls:
-                logger.warning("Ввод не содержит ни одного корректного URL.")
-                self._io["output"]("❌ Ввод не содержит ни одного корректного URL. Попробуйте ещё раз.")
-                continue
-
-            if not all(url.startswith("http") for url in urls):
-                logger.warning("Некорректный формат URL: не все начинаются с http/https.")
-                self._io["output"]("❌ Все URL должны начинаться с http или https. Попробуйте ещё раз.")
-                continue
-
-            if len(urls) == 1:
-                self._answers["url"] = urls[0]
-                logger.info("Установлен одиночный URL: %s", urls[0])
-                self._io["output"](f"URL установлен: {urls[0]}")
-            else:
-                self._answers["url"] = urls
-                logger.info("Установлен список URL: %s", urls)
-                self._io["output"](f"Список URL установлен: {', '.join(urls)}")
-
-            return None
+        return self._ask_urls(step_name="URL вакансии", key="url")
 
     def ask_use_alternate_url(self) -> Union[bool, str]:
         """Спрашивает, хочет ли пользователь фильтровать по alternate_url."""
@@ -412,59 +399,51 @@ class InteractiveFilterInput:
     def ask_alternate_url(self) -> Optional[str]:
         """Запрашивает alternate_url или список alternate_url, валидирует ввод и сохраняет результат."""
 
-        logger.info("Пользователю предложено указать alternate URL для фильтрации.")
+        return self._ask_urls(step_name="alternate URL", key="alternate_url")
+
+    def _ask_urls(self, step_name: str, key: str) -> Literal["back", None]:
+        """
+        Универсальный метод для ask_name_vacancy и ask_alternate_url.
+
+        :param step_name: Название шага
+        :param key: Название ключа
+        :return: Возвращает, либо "back", либо None
+        """
+
+        logger.info("Запрос '%s' начат.", step_name)
 
         while True:
             self._io["output"]("")
-            self._io["output"]("Введите alternate URL или список alternate URL через запятую.")
-            self._io["output"]("Например: https://hh.ru/alt/123, https://hh.ru/alt/456")
+            self._io["output"](f"Введите {step_name} или список {step_name} через запятую.")
+            self._io["output"]("Например: https://hh.ru/vacancy/123, https://hh.ru/alt/456")
             self._io["output"]("Если указано несколько — будет использован оператор in.")
-            self._io["output"]("Оставьте пустым, чтобы пропустить этот шаг.")
-            self._io["output"]("Введите 'назад', чтобы вернуться на шаг назад.")
-            self._io["output"]("Введите 'отмена', чтобы прервать сборку фильтра.")
+            self._print_common_instructions(first_step=False)
             self._io["output"]("")
 
             raw_input = self._io["input"]("→ ").strip()
-            logger.debug("Ответ пользователя на шаг 'alternate URL': '%s'", raw_input)
-
-            if raw_input.lower() == "отмена":
-                logger.warning("Пользователь прервал сборку фильтра на этапе alternate URL.")
-                self._io["output"]("Сборка фильтра отменена.")
-                raise FilterCancelled("Фильтр отменён пользователем.")
-
-            if raw_input.lower() == "назад":
-                logger.info("Пользователь выбрал 'назад' на шаге alternate URL.")
-                self._io["output"]("Вы возвращаетесь на шаг назад.")
-                return "back"
-
-            if raw_input == "":
-                logger.info("Пользователь пропустил шаг alternate URL.")
-                self._io["output"]("Alternate URL не указан. Переходим к следующему шагу.")
+            status, value = validate_user_input(io=self._io, user_input=raw_input, step=step_name, first_step=False)
+            if status == "skip":
                 return None
+            elif status == "back":
+                return "back"
+            elif status == "ok":
+                urls = validate_url(io=self._io, user_input=raw_input, step=step_name)
+                if urls is None:
+                    continue
 
-            urls = [url.strip() for url in raw_input.split(",") if url.strip()]
-            logger.debug("Обработанный список alternate URL: %s", urls)
-
-            if not urls:
-                logger.warning("Ввод не содержит ни одного корректного alternate URL.")
-                self._io["output"]("❌ Ввод не содержит ни одного корректного alternate URL. Попробуйте ещё раз.")
-                continue
-
-            if not all(url.startswith("http") for url in urls):
-                logger.warning("Некорректный формат alternate URL: не все URL начинаются с http/https. Ввод: %s", urls)
-                self._io["output"]("❌ Все alternate URL должны начинаться с http или https. Попробуйте ещё раз.")
-                continue
-
-            if len(urls) == 1:
-                self._answers["alternate_url"] = urls[0]
-                logger.info("Установлен одиночный alternate URL: %s", urls[0])
-                self._io["output"](f"Alternate URL установлен: {urls[0]}")
+                if len(urls) == 1:
+                    self._answers[key] = urls[0]
+                    logger.info("Установлен одиночный %s: %s", step_name, urls[0])
+                    self._io["output"](
+                        f"{step_name.capitalize() if step_name[0].islower() else step_name} установлен: {urls[0]}"
+                    )
+                else:
+                    self._answers[key] = urls
+                    logger.info("Установлен список %s: %s", step_name, urls)
+                    self._io["output"](f"Список {step_name} установлен: {', '.join(urls)}")
+                return None
             else:
-                self._answers["alternate_url"] = urls
-                logger.info("Установлен список alternate URL: %s", urls)
-                self._io["output"](f"Список alternate URL установлен: {', '.join(urls)}")
-
-            return None
+                raise UnexpectedStatusError(f"Неожиданный статус: {status}")
 
     def preview(self) -> None:
         """Выводит человекочитаемый обзор собранных фильтров."""
