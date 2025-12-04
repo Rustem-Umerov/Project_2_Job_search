@@ -8,6 +8,7 @@ from job_search.filters.vacancy_filter import VacancyFilter, normalize_filter
 from job_search.models.vacancy import ALLOWED_FIELDS, Vacancy
 from job_search.storage.base_storage import VacancyStorage
 from job_search.utils.logger_setup import get_logger
+from job_search.utils.vacancy_fields_validators import norm_str, validate_list
 
 logger = get_logger(__name__)
 
@@ -87,12 +88,11 @@ class JSONVacancyStorage(VacancyStorage):
         except (json.JSONDecodeError, IOError):
             return False
 
-    def get_vacancies(self, filter_dict: Optional[dict] = None) -> list[Vacancy]:
+    def get_vacancies(self) -> list[Vacancy]:
         """
-        Загружает вакансии из JSON-файла и применяет фильтрацию, если передан фильтр.
+        Загружает вакансии из JSON-файла.
 
-        :param filter_dict: Словарь с условиями фильтрации.
-        :return: Список объектов Vacancy, соответствующих фильтру.
+        :return: Список объектов Vacancy.
         """
 
         try:
@@ -104,33 +104,72 @@ class JSONVacancyStorage(VacancyStorage):
                     return []
 
                 parsed_vacancies = []
-                for v in raw_vacancies:
+                for idx, v in enumerate(raw_vacancies, start=1):
                     try:
                         parsed_vacancies.append(Vacancy(**v))
                     except TypeError as e:
-                        logger.warning(f"Ошибка при создании Vacancy из данных: {e}")
+                        logger.warning("Ошибка при создании Vacancy из записи #%d: %s. Данные: %r", idx, e, v)
                         continue
 
-                if filter_dict is None:
-                    return parsed_vacancies
-
-                if not isinstance(filter_dict, dict):
-                    logger.error(f"Фильтр должен быть словарем, а получен {type(filter_dict).__name__}.")
-                    return []
-
-                try:
-                    normalized_filter = normalize_filter(filter_dict)
-                    vacancy_filter = VacancyFilter(normalized_filter)
-
-                except (TypeError, ValueError) as e:
-                    logger.error(f"[get_vacancies] Невозможно применить фильтр: {e}")
-                    return []
-
-                return [v for v in parsed_vacancies if vacancy_filter.match(v)]
+                return parsed_vacancies
 
         except (json.JSONDecodeError, IOError) as e:
             logger.error(f"Ошибка при чтении файла вакансий: {e}")
             return []
+
+    def apply_filter(self, filter_dict: Optional[dict] = None) -> list[Vacancy]:
+        """
+        Применяет фильтр к вакансиям в хранилище.
+
+        Фильтр — это словарь с ключами, соответствующими атрибутам вакансии
+        (например, "currency", "salary_from").
+
+        :param filter_dict: Словарь с условиями фильтрации (опционально).
+        :return: Список объектов Vacancy, соответствующих фильтру.
+        """
+
+        vacancies = self.get_vacancies()
+        if not vacancies:
+            return []
+
+        if not filter_dict:
+            return vacancies
+
+        if not isinstance(filter_dict, dict):
+            logger.error(f"Фильтр должен быть словарем, а получен {type(filter_dict).__name__}.")
+            return []
+
+        try:
+            normalized_filter = normalize_filter(filter_dict)
+            vacancy_filter = VacancyFilter(normalized_filter)
+        except (TypeError, ValueError) as e:
+            logger.error(f"Невозможно применить фильтр: {e}")
+            return []
+
+        filtered = [v for v in vacancies if vacancy_filter.match(v)]
+        logger.debug(
+            "apply_filter: применён фильтр %s, найдено %d вакансий из %d", filter_dict, len(filtered), len(vacancies)
+        )
+        return filtered
+
+    def safe_load_all(self) -> Optional[list]:
+        """Безопасно загружает список вакансий, возвращает None при ошибке."""
+
+        try:
+            return self._load_all()
+        except Exception as e:
+            logger.exception("Ошибка при загрузке списка вакансий: %s.", e)
+            return None
+
+    def safe_save_all(self, list_vacancies: list) -> bool:
+        """Безопасно сохраняет список вакансий, возвращает False при ошибке."""
+
+        try:
+            self._save_all(list_vacancies)
+            return True
+        except Exception as e:
+            logger.exception("Ошибка при сохранении вакансий: %s", e)
+            return False
 
     def add_vacancy(self, vacancy: Vacancy) -> bool:
         """
@@ -154,12 +193,11 @@ class JSONVacancyStorage(VacancyStorage):
             logger.error("Ошибка. В вакансии отсутствует url_vacancy и alternate_url")
             raise ValueError("В вакансии отсутствует URL")
 
-        vacancy_url = vacancy.url_vacancy or vacancy.alternate_url
+        vacancy_url = vacancy.url_vacancy
+        vacancy_alternate_url = vacancy.alternate_url
 
-        try:
-            list_vacancies = self._load_all()
-        except Exception as e:
-            logger.exception(f"Ошибка при загрузке списка вакансий: {e}.")
+        list_vacancies = self.safe_load_all()
+        if not list_vacancies:
             return False
 
         if not isinstance(list_vacancies, list):
@@ -167,20 +205,20 @@ class JSONVacancyStorage(VacancyStorage):
             raise ValueError("Формат файла вакансий некорректен")
 
         try:
-            vacancy_exists = self._exists(vacancy_url)
+            vacancy_exists = self._exists(vacancy_url, vacancy_alternate_url)
         except Exception as e:
             logger.exception(f"Ошибка при проверке существования вакансии: {e}")
             return False
 
         if vacancy_exists:
             try:
-                vacancy_dict = self._to_dict(vacancy)
+                vacancy_dict = vacancy.to_dict()
             except Exception as e:
                 logger.exception(f"Ошибка при сериализации вакансии для обновления: {e}.")
                 return False
 
             try:
-                update_vac = self._update_vacancy(vacancy_url, vacancy_dict)
+                update_vac = self.update_vacancy(vacancy_url, vacancy_dict)
             except Exception as e:
                 logger.exception(f"Ошибка при обновлении вакансии: {e}.")
                 return False
@@ -193,22 +231,31 @@ class JSONVacancyStorage(VacancyStorage):
                 return False
 
         try:
-            vac_dict = self._to_dict(vacancy)
+            vac_dict = vacancy.to_dict()
         except Exception as e:
             logger.exception(f"Ошибка при сериализации новой вакансии: {e}.")
             return False
 
         list_vacancies.append(vac_dict)
 
-        try:
-            self._save_all(list_vacancies)
+        if self.safe_save_all(list_vacancies):
             logger.info(f"Добавлена новая вакансия: {vacancy_url}")
             return True
-        except Exception as e:
-            logger.exception(f"Ошибка при сохранении вакансий после добавления: {e}.")
-            return False
+        return False
 
-    def _update_vacancy(self, url: str, new_data: dict) -> bool:
+    @staticmethod
+    def _normalize_url_or_fail(url: str) -> Optional[str]:
+        """
+        Нормализует URL. Возвращает строку или None, если URL пустой/некорректный.
+        """
+
+        normalized_url = norm_str(url, lower=True)
+        if not normalized_url:
+            logger.warning("Передан пустой URL для поиска вакансии")
+            return None
+        return normalized_url
+
+    def update_vacancy(self, url: str, new_data: dict) -> bool:
         """
         Обновляет вакансию по-заданному URL, если есть реальные изменения.
         Фильтрует входные данные, сравнивает с текущими значениями,
@@ -219,29 +266,22 @@ class JSONVacancyStorage(VacancyStorage):
         :return: True, если были изменения и они сохранены; False — если нет изменений или вакансия не найдена
         """
 
-        if not isinstance(url, str):
-            logger.error(f"Ошибка: URL должен быть строкой. Получено: {type(url).__name__}")
-            return False
-
-        normalized_url = url.strip().lower()
+        normalized_url = self._normalize_url_or_fail(url)
         if not normalized_url:
-            logger.error("Ошибка: передан пустой или некорректный URL.")
             return False
 
         if not isinstance(new_data, dict):
             logger.error(f"Ошибка: новые данные должны быть словарём. Получено: {type(new_data).__name__}")
             return False
 
-        try:
-            list_vacancies = self._load_all()
-        except Exception as e:
-            logger.exception(f"Ошибка при загрузке списка вакансий: {e}")
+        list_vacancies = self.safe_load_all()
+        if not list_vacancies:
             return False
 
-        if not self._validate_vacancy_list(list_vacancies):
+        if not validate_list(list_vacancies, dict):
             return False
 
-        index_vac = self._find_vacancy_index(normalized_url, list_vacancies)
+        index_vac = self.find_vacancy_index(normalized_url, list_vacancies)
         if index_vac is None:
             logger.warning(f"Вакансия с URL '{url}' не найдена")
             return False
@@ -268,15 +308,11 @@ class JSONVacancyStorage(VacancyStorage):
             logger.info(f"Нет изменений для вакансии '{url}' — обновление не требуется.")
             return False
 
-        try:
-            self._save_all(list_vacancies)
+        if self.safe_save_all(list_vacancies):
             logger.info(f"Обновлена вакансия '{url}': изменены поля {changes_made}")
             logger.debug(f"Обновлённая вакансия: {original_vacancy}")
             return True
-
-        except Exception as e:
-            logger.error(f"Ошибка при сохранении вакансии '{url}': {e}")
-            return False
+        return False
 
     def _save_all(self, items: list[dict]) -> None:
         """
@@ -304,93 +340,45 @@ class JSONVacancyStorage(VacancyStorage):
             logger.exception(f"Ошибка при сохранении данных: {e}")
             raise
 
-    def _to_dict(self, vacancy: Vacancy) -> dict:
+    def save(self, items: list[dict]) -> None:
         """
-        Преобразует объект Vacancy в словарь по доступным полям из ALLOWED_FIELDS.
-        Применяет нормализацию значений, задаёт дефолты для пустых полей
-        и корректирует диапазон зарплаты, если from > to.
-
-        :param vacancy: Экземпляр Vacancy для сериализации.
-        :return: Словарь с нормализованными данными, готовый для JSON.
+        Публичный метод: сохраняет список вакансий в файл (атомарно).
+        Вызывается из контроллера.
         """
 
-        vacancy_dict = {}
-        salary_from = None
-        salary_to = None
+        self._save_all(items)
 
-        logger.debug(f"Начало сериализации вакансии: {vacancy}")
-
-        for field_name in ALLOWED_FIELDS:
-            obj_vacancy = getattr(vacancy, field_name, None)
-            logger.debug(f"Обработка поля '{field_name}': исходное значение = {obj_vacancy!r}")
-
-            if field_name in ("name_vacancy", "url_vacancy", "alternate_url", "currency", "description"):
-                if field_name == "description":
-                    field_value = self._norm_str(obj_vacancy) or "Описание не указано"
-                else:
-                    field_value = self._norm_str(obj_vacancy) or ""
-
-            elif field_name == "salary_from":
-                salary_from = self._norm_int(obj_vacancy)
-                field_value = str(salary_from) if salary_from is not None else ""
-
-            elif field_name == "salary_to":
-                salary_to = self._norm_int(obj_vacancy)
-                field_value = str(salary_to) if salary_to is not None else ""
-
-            else:
-                logger.warning(f"Поле {field_name} не обработано — нет нормализатора")
-                continue
-
-            logger.debug(f"Поле '{field_name}': нормализованное значение = {field_value!r}")
-            vacancy_dict[field_name] = field_value
-
-        if salary_from is not None and salary_to is not None and salary_from > salary_to:
-            logger.warning(
-                f"Корректировка диапазона зарплаты: salary_from={salary_from}, salary_to={salary_to} → меняем местами"
-            )
-            vacancy_dict["salary_from"], vacancy_dict["salary_to"] = str(salary_to), str(salary_from)
-            logger.debug(
-                f"После корректировки: salary_from={vacancy_dict['salary_from']}, "
-                f"salary_to={vacancy_dict['salary_to']}"
-            )
-
-        cleaned = {k: v for k, v in vacancy_dict.items() if v is not None}
-        logger.debug(f"Результат сериализации: {cleaned}")
-
-        return cleaned
-
-    @staticmethod
-    def _norm_str(value: object) -> str | None:
-        """Обрезает пробелы, пустое → None."""
-
-        if isinstance(value, str):
-            s = value.strip()
-            return s or None
-        return None
-
-    @staticmethod
-    def _norm_int(value: object | int) -> int | None:
-        """Преобразует в int, если возможно."""
-
-        if isinstance(value, (str, int)):
-            try:
-                return int(value)
-            except (TypeError, ValueError):
-                return None
-
-        return None
-
-    def _exists(self, url: str) -> bool:
+    def clear(self) -> None:
         """
-        Проверяет, существует ли вакансия с указанным URL в хранилище.
+        Полностью очищает хранилище вакансий.
         """
 
-        normalized_url = url.strip().lower()
+        self._save_all([])
+        logger.info("Хранилище вакансий очищено.")
 
-        return any(
-            normalized_url == (Vacancy.from_dict(d).url_vacancy or "").strip().lower() for d in self._load_all()
-        )
+    def _exists(self, url: str, alternate_url: str) -> bool:
+        """
+        Проверяет, существует ли вакансия с указанным URL или alternate_url в хранилище.
+        Работает даже если ссылки перепутаны между полями.
+
+        :param url: Основная ссылка на вакансию
+        :param alternate_url: Альтернативная ссылка на вакансию
+        :return: True, если вакансия существует, иначе False
+        """
+
+        list_vacancies = self._load_all()
+        if not validate_list(list_vacancies, dict):
+            return False
+
+        # Проверяем основную ссылку
+        if url and self.find_vacancy_index(url, list_vacancies) is not None:
+            return True
+
+        # Проверяем альтернативную ссылку
+        if alternate_url and self.find_vacancy_index(alternate_url, list_vacancies) is not None:
+            return True
+
+        return False
 
     def _load_all(self) -> list[dict]:
         """
@@ -413,6 +401,30 @@ class JSONVacancyStorage(VacancyStorage):
             logger.error(f"Ошибка при чтении файла {self._filepath}: {e}.")
             return []
 
+    def load(self) -> list[dict]:
+        """
+        Публичный метод: загружает список вакансий из файла.
+        Возвращает list[dict], даже если файл пустой или повреждён.
+        """
+
+        return self._load_all()
+
+    def is_empty(self) -> bool:
+        """
+        Проверяет, пустое ли хранилище вакансий.
+        :return: True, если вакансий нет; False — если есть.
+        """
+
+        return len(self._load_all()) == 0
+
+    def count(self) -> int:
+        """
+        Возвращает количество вакансий в хранилище.
+        :return: Количество вакансий (int).
+        """
+
+        return len(self._load_all())
+
     def remove_vacancy(self, url: str) -> bool:
         """
         Удаляет вакансию из хранилища по её URL.
@@ -422,25 +434,18 @@ class JSONVacancyStorage(VacancyStorage):
         :return: Bool — результат удаления.
         """
 
-        if not isinstance(url, str):
-            logger.error(f"Ошибка: URL должен быть строкой. Получено: {type(url).__name__}")
-            return False
-
-        normalized_url = url.strip().lower()
+        normalized_url = self._normalize_url_or_fail(url)
         if not normalized_url:
-            logger.error("Ошибка: передан пустой или некорректный URL.")
             return False
 
-        try:
-            list_vacancies = self._load_all()
-        except Exception as e:
-            logger.exception(f"Ошибка при загрузке списка вакансий: {e}.")
+        list_vacancies = self.safe_load_all()
+        if not list_vacancies:
             return False
 
-        if not self._validate_vacancy_list(list_vacancies):
+        if not validate_list(list_vacancies, dict):
             return False
 
-        index_vac_for_del = self._find_vacancy_index(normalized_url, list_vacancies)
+        index_vac_for_del = self.find_vacancy_index(normalized_url, list_vacancies)
         if index_vac_for_del is None:
             logger.warning(f"Вакансия с URL '{url}' не найдена")
             return False
@@ -457,7 +462,8 @@ class JSONVacancyStorage(VacancyStorage):
             logger.exception(f"Ошибка при сохранений вакансий: {e}.")
             return False
 
-    def _find_vacancy_index(self, url: str, list_vacancies: list[dict]) -> Optional[int]:
+    @staticmethod
+    def find_vacancy_index(url: str, list_vacancies: list[dict]) -> Optional[int]:
         """
         Возвращает индекс вакансии с заданным URL (url_vacancy или alternate_url).
         Если не найдено — возвращает None.
@@ -467,16 +473,12 @@ class JSONVacancyStorage(VacancyStorage):
         :return: Индекс вакансии или None.
         """
 
-        if not isinstance(url, str):
-            logger.error(f"Передан URL некорректного типа: {type(url).__name__}")
-            return None
-
-        normalized_url = url.strip().lower()
+        normalized_url = norm_str(url, lower=True)
         if not normalized_url:
             logger.warning("Передан пустой URL для поиска вакансии")
             return None
 
-        if not self._validate_vacancy_list(list_vacancies):
+        if not validate_list(list_vacancies, dict):
             return None
 
         logger.debug(f"Начат поиск вакансии по URL: '{normalized_url}'")
@@ -493,26 +495,30 @@ class JSONVacancyStorage(VacancyStorage):
         logger.info(f"Вакансия с URL '{url}' не найдена")
         return None
 
-    @staticmethod
-    def _validate_vacancy_list(data: object) -> bool:
+    def get_by_url(self, url: str) -> Optional[Vacancy]:
         """
-        Проверяет, что data — это непустой список словарей.
-        Логирует ошибки при несоответствии.
+        Возвращает вакансию по её URL (url_vacancy или alternate_url).
+        Если данные повреждены или невалидны — логирует ошибку и возвращает None.
 
-        :param data: Объект, который должен быть списком вакансий.
-        :return: True, если список валиден; False — если нет.
+        :param url: Уникальный URL вакансии.
+        :return: Объект Vacancy или None, если не найдено.
         """
 
-        if not isinstance(data, list):
-            logger.error(f"Ожидался список вакансий, но получено: {type(data).__name__}")
-            return False
+        normalized_url = norm_str(url, lower=True)
+        if not normalized_url:
+            logger.warning("Передан пустой URL для поиска вакансии")
+            return None
 
-        if not data:
-            logger.info("Список вакансий пуст — операция невозможна")
-            return False
+        list_vacancies = self._load_all()
+        vac_idx = self.find_vacancy_index(normalized_url, list_vacancies)
+        if vac_idx is None:
+            logger.info("Вакансия не найдена.")
+            return None
 
-        if not all(isinstance(v, dict) for v in data):
-            logger.warning("Некоторые элементы списка вакансий не являются словарями")
-            return False
-
-        return True
+        vacancy = list_vacancies[vac_idx]
+        logger.debug("Вакансия найдена. Индекс: %s Данные: %s.", vac_idx, vacancy)
+        try:
+            return Vacancy(**vacancy)
+        except (TypeError, ValueError) as e:
+            logger.warning("get_by_url: не удалось создать Vacancy из %s: %s", vacancy, e)
+            return None
