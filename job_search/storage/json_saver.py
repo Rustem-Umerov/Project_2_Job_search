@@ -152,14 +152,14 @@ class JSONVacancyStorage(VacancyStorage):
         )
         return filtered
 
-    def safe_load_all(self) -> Optional[list]:
+    def safe_load_all(self) -> list:
         """Безопасно загружает список вакансий, возвращает None при ошибке."""
 
         try:
             return self._load_all()
         except Exception as e:
             logger.exception("Ошибка при загрузке списка вакансий: %s.", e)
-            return None
+            return []
 
     def safe_save_all(self, list_vacancies: list) -> bool:
         """Безопасно сохраняет список вакансий, возвращает False при ошибке."""
