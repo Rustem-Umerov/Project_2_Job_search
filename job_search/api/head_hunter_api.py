@@ -30,7 +30,8 @@ class HeadHunterAPI(VacancyAPI):
         self._timeout = timeout
         self._session = self._init_session(max_retries)
 
-    def _init_session(self, max_retries: int) -> requests.Session:
+    @staticmethod
+    def _init_session(max_retries: int) -> requests.Session:
         """
         Конфигурирует и возвращает requests.Session с политикой ретраев.
 
