@@ -7,6 +7,7 @@ from requests.exceptions import HTTPError, RequestException, Timeout
 from urllib3.util.retry import Retry
 
 from job_search.api.base_api import VacancyAPI
+from job_search.api.types import VacancyResult
 from job_search.utils.logger_setup import get_logger
 
 logger = get_logger(__name__)
@@ -48,9 +49,11 @@ class HeadHunterAPI(VacancyAPI):
         session.mount("https://", adapter)
         session.mount("http://", adapter)
 
+        session.headers.update({"HH-User-Agent": "Project_2_Job_search (rustem.umerov.00@yandex.ru)"})
+
         return session
 
-    def get_vacancies(self, keyword: str, **kwargs: Any) -> list[dict[str, Any]]:
+    def get_vacancies(self, keyword: str, **kwargs: Any) -> VacancyResult:
         """
         Получает список вакансий по ключевому слову.
 
@@ -59,24 +62,36 @@ class HeadHunterAPI(VacancyAPI):
             **kwargs: Дополнительные параметры:
                 - area (int): Регион поиска (по умолчанию 1).
                 - per_page (int): Количество вакансий на страницу (по умолчанию 20).
+                - page (int): Номер страницы результатов (по умолчанию 0, первая страница).
+                - only_with_salary (bool): Исключить вакансии без указания зарплаты.
+                - salary (int): Минимальная зарплата для фильтрации.
+                - currency (str): Валюта зарплаты (например, "RUR").
+                - experience (str): Требуемый опыт работы (значения из справочника hh.ru).
+                - employment (str): Тип занятости (например, "full", "part").
+                - schedule (str): График работы (например, "remote", "fullDay").
+                - search_field (str): Поле поиска (например, "name", "company_name").
 
         Returns:
-            list[dict[str, Any]]: Список вакансий.
+            VacancyResult: объект Pydantic‑модели с результатами поиска.
 
         Raises:
             ValueError: Если keyword пустой.
             RuntimeError: Если в ответе API отсутствует ключ "items" или он не является списком.
         """
+
         if not keyword.strip():
             logger.error("Пустой keyword передан в get_vacancies")
             raise ValueError("The keyword must not be empty.")
 
         area = kwargs.pop("area", 1)
         per_page = kwargs.pop("per_page", 20)
+        # нормализация per_page, если меньше 0, то 1, если больше 100, то 100
+        per_page = min(max(int(per_page), 1), 100)
+        page = kwargs.pop("page", 0)
 
-        logger.debug(f"Параметры поиска: keyword='{keyword}', area={area}, per_page={per_page}")
+        logger.debug(f"Параметры поиска: keyword='{keyword}', area={area}, per_page={per_page}, page={page}")
 
-        params = {"text": keyword, "area": area, "per_page": per_page}
+        params = {"text": keyword, "area": area, "per_page": per_page, "page": page}
 
         connect_kwargs = {
             **kwargs,
@@ -87,14 +102,53 @@ class HeadHunterAPI(VacancyAPI):
         logger.info(f"Отправка запроса к API: endpoint='vacancies', params={params}")
         response_data: dict[str, Any] = self._connect(**connect_kwargs)
 
-        items: Optional[list[dict[str, Any]]] = response_data.get("items")
+        items: list[dict[str, Any]] = response_data.get("items", [])
+        found: int = response_data.get("found", len(items))
+        pages: int = response_data.get("pages", 0)
 
         if not isinstance(items, list):
             logger.error(f"Некорректный формат 'items' в ответе API: {items}")
             raise RuntimeError("Expected 'items' to be a list in API response")
 
         logger.info(f"Получено {len(items)} вакансий")
-        return items
+        return VacancyResult(
+            vacancies=items, total_count=found, total_pages=pages, page_size=per_page, current_page=page, metadata=None
+        )
+
+    def get_all_vacancies(self, keyword: str, **kwargs: Any) -> VacancyResult:
+        """
+        Метод получает все вакансии по ключевому слову.
+        Делает первый запрос, чтобы узнать количество страниц,
+        а потом циклом проходит по оставшимся страницам и собирает все вакансии.
+
+        Args:
+            keyword (str): Ключевое слово для поиска вакансий.
+            **kwargs (Any): Дополнительные параметры запроса (например, регион, опыт).
+
+        Returns:
+            VacancyResult: объект Pydantic‑модели с результатами поиска.
+        """
+
+        vacancies: list[dict[str, Any]] = []
+
+        # первый запрос, чтобы узнать общее количество страниц
+        first_response: VacancyResult = self.get_vacancies(keyword, page=0, per_page=100, **kwargs)
+        vacancies.extend(first_response.vacancies)
+        pages = first_response.total_pages
+
+        # цикл по остальным страницам
+        for page in range(1, pages):
+            response = self.get_vacancies(keyword, page=page, per_page=100, **kwargs)
+            vacancies.extend(response.vacancies)
+
+        return VacancyResult(
+            vacancies=vacancies,
+            total_count=len(vacancies),
+            total_pages=pages,
+            page_size=first_response.page_size,
+            current_page=None,
+            metadata=None,
+        )
 
     def _build_url(self, endpoint: str) -> str:
         """
@@ -158,6 +212,9 @@ class HeadHunterAPI(VacancyAPI):
             result = response.json()
             if not isinstance(result, dict):
                 raise RuntimeError("Expected JSON object from hh.ru")
+            if "errors" in result:
+                logger.error(f"API вернул ошибки: {result['errors']}")
+                raise RuntimeError(f"hh.ru API error: {result['errors']}")
             return result
         except ValueError as e:
             logger.exception("Invalid JSON from hh.ru")
