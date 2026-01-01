@@ -98,14 +98,15 @@ def ask_choice(io: dict, menu: dict, *, prompt: str = "Введите номер
         user_input = io["input"](prompt).strip()
         logger.debug("ask_choice: ввод пользователя → '%s'", user_input)
 
+        valid_choices = [k for k in menu if isinstance(k, int)]
         if not user_input.isdigit():
-            io["output"](f"Ошибка: нужно ввести цифру от {min(menu)} до {max(menu)}.")
+            io["output"](f"Ошибка: нужно ввести цифру от {min(valid_choices)} до {max(valid_choices)}.")
             logger.warning("ask_choice: некорректный ввод (не цифра) → '%s'", user_input)
             continue
 
         choice = int(user_input)
         if choice not in menu:
-            io["output"](f"Ошибка: такого пункта нет. Введите цифру от {min(menu)} до {max(menu)}.")
+            io["output"](f"Ошибка: такого пункта нет. Введите цифру от {min(valid_choices)} до {max(valid_choices)}.")
             logger.warning("ask_choice: некорректный ввод (нет пункта) → %d", choice)
             continue
 
@@ -142,15 +143,22 @@ def next_step(*, io: dict, menu: dict[int, tuple[str, str]], choice: int, defaul
     return step_name
 
 
-def render_menu(*, io: dict, menu: dict, template: str = "{num}. {title}") -> None:
+def render_menu(*, io: dict, menu: dict) -> None:
     """
     Выводит меню в консоль.
     Не возвращает значения — отвечает только за вывод.
+
+    :param io: Словарь с функциями ввода/вывода.
+    :param menu: Словарь меню вида {num: (title, action)}.
+    :return: None. Функция отвечает только за вывод.
     """
 
     for num, (title, action) in menu.items():
         try:
-            line = template.format(num=num, title=title, action=action)
+            if isinstance(num, int):
+                line = f"{num}. {title}"
+            else:
+                line = str(title)
             io["output"](line)
         except Exception as e:
             logger.exception(f"Ошибка при выводе пункта меню {num}: {e}")
@@ -161,8 +169,18 @@ def render_vacancies_page(
     *, io: dict, vacancies: list, current_page: int, page_size: int, total_vacancies: int
 ) -> tuple[int, int]:
     """
-    Отображает список вакансий для текущей страницы.
+    Отображает список вакансий для текущей страницы в виде таблицы:
+    № на стр. | Глобальный индекс | Вакансия
     Возвращает кортеж (start, end) — индексы диапазона показанных вакансий.
+
+    :param io: Словарь с функциями ввода/вывода.
+    :param vacancies: Список вакансий (объекты или строки), из которого берётся срез.
+    :param current_page: Номер текущей страницы (начиная с 1).
+    :param page_size: Количество вакансий, отображаемых на одной странице.
+    :param total_vacancies: Общее количество вакансий в списке.
+    :return: Tuple[int, int] — кортеж (start, end), где:
+             start (int) — индекс первой показанной вакансии (0-based),
+             end (int) — индекс последней показанной вакансии (не включительно)
     """
 
     start = (current_page - 1) * page_size
@@ -172,8 +190,12 @@ def render_vacancies_page(
     logger.debug(f"Вывод вакансий {start + 1}–{end} из {total_vacancies} (страница {current_page})")
     io["output"]("")
 
-    for index, vacancy in enumerate(vacancies[start:end], start=start + 1):
-        io["output"](f"{index}. {vacancy}")
+    # Заголовок таблицы
+    io["output"](f"{'№ на стр.':<8}{'Глоб. №':<10}{'Вакансия'}")
+    io["output"]("-" * 50)
+
+    for local_idx, (global_idx, vacancy) in enumerate(zip(range(start + 1, end + 1), vacancies[start:end]), start=1):
+        io["output"](f"{local_idx:<8}{global_idx:<10}{vacancy}")
         io["output"]("")
 
     return start, end
