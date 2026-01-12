@@ -144,7 +144,7 @@ class JobSearchApp:
         # Номер страницы при просмотре архива. (начинаем с 1)
         self.storage_current_page: int = 1
 
-        # Вакансия для сохранения в архив (объект класса Vacancy)
+        # Текущая выбранная вакансия (для просмотра, сохранения, обновления или удаления)
         self.current_vacancy: Optional[Vacancy] = None
 
         # Измененный список вакансии в работе с архивом
@@ -1952,9 +1952,6 @@ class JobSearchApp:
             self._io["output"]("ℹ️ Изменений не было. Возврат в редактор.")
             return "storage_update_edit"
 
-        logger.info("Вакансия обновлена. Изменения сохранены.")
-        self._io["output"]("✅ Изменения сохранены.")
-
         # Сброс временных данных
         self.current_vacancy = None
         self.vacancy_new_data = {}
@@ -2218,6 +2215,8 @@ class JobSearchApp:
             self.vacancy_idx = None
             # Сбрасываем страницу архива, потому что набор вакансий изменился
             self.storage_current_page = 1
+            # Сбрасываем, выбранную пользователем, вакансию
+            self.current_vacancy = None
 
         except IndexError:
             self._io["output"]("Ошибка: индекс вакансии некорректен. Возврат к просмотру архива.")
