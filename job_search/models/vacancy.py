@@ -34,16 +34,17 @@ class Vacancy:
 
     def __init__(
         self,
-        name_vacancy: str,
-        url_vacancy: str,
-        alternate_url: str,
-        salary_from: Optional[int],
-        salary_to: Optional[int],
-        currency: str,
-        description: str,
+        name_vacancy: str = None,
+        url_vacancy: str = None,
+        alternate_url: str = None,
+        salary_from: Optional[int] = None,
+        salary_to: Optional[int] = None,
+        currency: str = None,
+        description: str = None,
     ) -> None:
         """
         Инициализация настройки атрибутов класса Vacancy.
+        Если атрибут отсутствует, то по умолчанию None.
 
         :param name_vacancy: Название вакансии.
         :param url_vacancy: Ссылка на вакансии.
