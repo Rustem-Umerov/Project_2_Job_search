@@ -166,7 +166,7 @@ def render_menu(*, io: dict, menu: dict) -> None:
 
 
 def render_vacancies_page(
-    *, io: dict, vacancies: list, current_page: int, page_size: int, total_vacancies: int
+    *, io: dict, vacancies: list, current_page: int, page_size: int, total_vacancies: int, global_offset: int = 0
 ) -> tuple[int, int]:
     """
     Отображает список вакансий для текущей страницы в виде таблицы:
@@ -178,23 +178,34 @@ def render_vacancies_page(
     :param current_page: Номер текущей страницы (начиная с 1).
     :param page_size: Количество вакансий, отображаемых на одной странице.
     :param total_vacancies: Общее количество вакансий в списке.
+    :param global_offset: Это номер, с которого начинается глобальная нумерация на текущей странице.
     :return: Tuple[int, int] — кортеж (start, end), где:
              start (int) — индекс первой показанной вакансии (0-based),
              end (int) — индекс последней показанной вакансии (не включительно)
     """
 
+    if total_vacancies == 0:
+        io["output"]("Список пуст.")
+        logger.debug("Список с вакансиями пуст (total_vacancies == 0)")
+        return 0, 0
+
     start = (current_page - 1) * page_size
     end = min(start + page_size, total_vacancies)
 
-    io["output"](f"Страница {current_page}. Вакансии {start + 1}–{end} из {total_vacancies}:")
-    logger.debug(f"Вывод вакансий {start + 1}–{end} из {total_vacancies} (страница {current_page})")
+    if total_vacancies == 1:
+        io["output"]("Страница 1. Вакансия 1 из 1:")
+        logger.debug("В списке вакансий: 1 вакансия (total_vacancies == 1)")
+    else:
+        io["output"](f"Страница {current_page}. Вакансии {start + 1}–{end} из {total_vacancies}:")
+        logger.debug(f"Вывод вакансий {start + 1}–{end} из {total_vacancies} (страница {current_page})")
     io["output"]("")
 
     # Заголовок таблицы
     io["output"](f"{'№ на стр.':<8}{'Глоб. №':<10}{'Вакансия'}")
     io["output"]("-" * 50)
 
-    for local_idx, (global_idx, vacancy) in enumerate(zip(range(start + 1, end + 1), vacancies[start:end]), start=1):
+    for local_idx, vacancy in enumerate(vacancies[start:end], start=1):
+        global_idx = global_offset + local_idx
         io["output"](f"{local_idx:<8}{global_idx:<10}{vacancy}")
         io["output"]("")
 
