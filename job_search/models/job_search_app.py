@@ -3,7 +3,9 @@ from __future__ import annotations
 from collections import ChainMap
 from typing import Any, Callable, Literal, Optional, overload
 
+from job_search.api.base_api import VacancyAPI
 from job_search.api.head_hunter_api import HeadHunterAPI
+from job_search.api.types import VacancyResult
 from job_search.filters.hh_formatter import HHFilterFormatter
 from job_search.filters.interactive_input import ALLOWED_CURRENCIES, InteractiveFilterInput
 from job_search.filters.preview_renderer import FilterPreviewRenderer
@@ -27,7 +29,6 @@ from job_search.utils.vacancy_fields_validators import (
     validate_salary,
     validate_url,
 )
-from job_search.api.types import VacancyResult
 
 logger = get_logger(__name__)
 
@@ -68,7 +69,7 @@ class JobSearchApp:
         # -------------------------------
 
         # Выбранный API-клиент (например, HHAPI), будет установлен после выбора пользователем
-        self.selected_api = None
+        self.selected_api: Optional[VacancyAPI] = None
 
         # Реестр доступных API-клиентов
         self.api_registry = self.build_api_registry()
@@ -111,9 +112,9 @@ class JobSearchApp:
         # Количество вакансии при просторе вакансии полученных от АПИ (перед добавлением в self.vacancies)
         self.ui_page_size: int = DEFAULT_RESULTS_COUNT
 
-        # Индекс вакансии при просторе вакансии полученных от АПИ (перед добавлением в self.vacancies)
+        # Индекс внутри API‑страницы
         # Указатель на то, с какой вакансии начинать показ внутри API‑страницы
-        self.ui_current_index = 0
+        self.ui_index = 0
 
         # -------------------------------
         # Локальное хранилище вакансий (результаты) из API
@@ -125,7 +126,7 @@ class JobSearchApp:
         # Общее количество вакансий в self.vacancies
         self.total_vacancies: int = 0
 
-        # Сколько показываем за раз при просмотре self.vacancies
+        # Размер страницы для локальных списков (результаты поиска-self.vacancies и архив-self.current_storage_list)
         self.page_size: int = DEFAULT_RESULTS_COUNT
 
         # Номер страницы внутреннего просмотра self.vacancies. (начинаем с 1)
@@ -165,7 +166,6 @@ class JobSearchApp:
         return {
             # Главное меню
             "main_menu": self.step_main_menu,
-
             # Работа с API
             "search": self.step_search,
             "search_one_page": self.step_search_one_page,
@@ -177,30 +177,23 @@ class JobSearchApp:
             "add_page_vacancies": self.step_add_page_vacancies,
             "choose_api": self.step_choose_api,
             "preview": self.step_preview,
-
             # Результаты поиска (local list)
             "show_results": self.step_show_results,
             "next_show_results": self.step_next_show_results,
             "prev_show_results": self.step_prev_show_results,
             "show_details": self.step_show_details,  # просмотр подробностей одной вакансии
-
             # Работа с локальным архивом (JSONVacancyStorage)
             "filter": self.step_filter,
             "apply_filter": self.step_apply_filter,
-
             "storage_menu": self.step_storage_menu,
             "storage_entry": self.step_storage_entry,
-
             "storage_add_from_results": self.step_storage_add_from_results,
             "storage_add": self.step_storage_add,
-
             "storage_update": self.step_storage_update,
             "storage_update_edit": self.step_storage_update_edit,
             "storage_update_save": self.step_storage_update_save,
-
             "storage_remove": self.step_storage_remove,
             "storage_remove_confirm": self.step_storage_remove_confirm,
-
             "storage_show_details": self.step_storage_show_details,
             "storage_select_vacancy": self.step_storage_select_vacancy,
         }
@@ -441,17 +434,17 @@ class JobSearchApp:
         """
         Выполняет запрос к API для получения одной страницы вакансий.
 
-        Возвращает:
+        Исользует _perform_search и возвращает:
             - "show_api_vacancies" если запрос успешен и вакансии найдены
             - "search" или "main_menu" если вакансий нет (через no_vacancies_try_again)
             - "main_menu" если произошла ошибка (через _reset_state_on_error)
         """
 
-        try:
-            raw_result = self.selected_api.get_vacancies(self.api_query_keyword, **self.api_query_params)
-            return self._handle_api_result(raw_result, mode="one_page")
-        except (OSError, ValueError, TypeError) as e:
-            return self._reset_state_on_error(error=e, mode="one_page")
+        api = self.selected_api
+        if api is None:
+            return self._reset_state_on_error(error=ValueError("API не выбран"), mode="one_page")
+
+        return self._perform_search(mode="one_page", api_method=api.get_vacancies)
 
     def no_vacancies_try_again(self) -> str:
         """
@@ -476,21 +469,46 @@ class JobSearchApp:
         # сюда никогда не дойдём, но нужно для mypy
         raise RuntimeError("Unreachable")
 
-    def step_search_all_vacancies(self):
+    def step_search_all_vacancies(self) -> str:
         """
         Выполняет запрос к API для получения всех доступных вакансий.
 
-        Возвращает:
+        Исользует _perform_search и возвращает:
             - "show_api_vacancies" если запрос успешен и вакансии найдены
             - "search" или "main_menu" если вакансий нет (через no_vacancies_try_again)
             - "main_menu" если произошла ошибка (через _reset_state_on_error)
         """
 
+        api = self.selected_api
+        if api is None:
+            return self._reset_state_on_error(error=ValueError("API не выбран"), mode="all_vacancies")
+
+        return self._perform_search(mode="all_vacancies", api_method=api.get_all_vacancies)
+
+    def _perform_search(self, *, mode: str, api_method: Callable[..., VacancyResult]) -> str:
+        """
+        Универсальный метод для запроса к API и получения всех доступных вакансий.
+
+        :param mode: Режим (one_page/all_vacancies)
+        :param api_method: Метод для запроса к АПИ
+        :return:
+                - "show_api_vacancies" если запрос успешен и вакансии найдены
+                - "search" или "main_menu" если вакансий нет (через no_vacancies_try_again)
+                - "main_menu" если произошла ошибка (через _reset_state_on_error)
+        """
+
         try:
-            raw_result = self.selected_api.get_all_vacancies(self.api_query_keyword, **self.api_query_params)
-            return self._handle_api_result(raw_result, mode="all_vacancies")
+            keyword = self.api_query_keyword
+            if keyword is None:
+                return self._reset_state_on_error(error=ValueError("Ключевое слово не задано"), mode=mode)
+
+            params = self.api_query_params or {}
+
+            raw_result = api_method(keyword, **params)
+            return self._handle_api_result(raw_result, mode=mode)
+
         except (OSError, ValueError, TypeError) as e:
-            return self._reset_state_on_error(error=e, mode="all_vacancies")
+            return self._reset_state_on_error(error=e, mode=mode)
 
     def _handle_api_result(self, raw_result: VacancyResult, mode: str) -> str:
         """
@@ -519,12 +537,13 @@ class JobSearchApp:
         # Дополнительные атрибуты для режима "one_page"
         if mode == "one_page":
             self.api_page_size = raw_result.page_size or DEFAULT_RESULTS_COUNT
-            self.api_current_page = raw_result.current_page or self.api_query_params.get("page", 0)
+            params = self.api_query_params or {}
+            self.api_current_page = raw_result.current_page or params.get("page", 0)
 
         # Обновляем состояние
         self.api_page_vacancies = new_page_vacancies
         self.api_total_vacancies = len(new_page_vacancies)
-        self.ui_current_index = 0
+        self.ui_index = 0
 
         # Логирование
         if mode == "one_page":
@@ -532,15 +551,16 @@ class JobSearchApp:
                 f"Запрос к API (one_page): keyword='{self.api_query_keyword}', "
                 f"page={self.api_current_page}, per_page={self.api_page_size}, "
                 f"найдено {self.api_total_vacancies} вакансий "
-                f"(found={self.found}, pages={self.api_total_pages })"
+                f"(found={self.found}, pages={self.api_total_pages})"
             )
 
         else:  # режим all_vacancies
+            params = self.api_query_params or {}
             logger.info(
                 f"Запрос к API (all_vacancies): keyword='{self.api_query_keyword}', "
-                f"area={self.api_query_params.get('area')}, "
+                f"area={params.get('area')}, "
                 f"найдено {self.api_total_vacancies} вакансий "
-                f"(found={self.found}, pages={self.api_total_pages })"
+                f"(found={self.found}, pages={self.api_total_pages})"
             )
         return "show_api_vacancies"
 
@@ -566,7 +586,7 @@ class JobSearchApp:
         self.api_mode = None
 
         # Сброс UI‑пагинации над API
-        self.ui_current_index = 0
+        self.ui_index = 0
 
         if mode == "one_page":
             self.api_current_page = 0
@@ -587,24 +607,31 @@ class JobSearchApp:
 
         while True:
             # Определяем диапазон для текущей страницы
-            start = self.ui_current_index
+            start = self.ui_index
             end = min(start + self.ui_page_size, self.api_total_vacancies)
 
             # Вычисляем номер страницы для отображения
-            current_page = (self.ui_current_index // self.ui_page_size) + 1
+            current_page = (self.ui_index // self.ui_page_size) + 1
 
             logger.debug(
                 "Рендер страницы: start=%s, end=%s, current_page=%s, total=%s",
-                start, end, current_page, self.api_total_vacancies
+                start,
+                end,
+                current_page,
+                self.api_total_vacancies,
             )
 
             # Вывод вакансий текущей страницы
+            assert self.api_current_page is not None
+            assert self.api_page_size is not None
+
             render_vacancies_page(
                 io=self._io,
                 vacancies=self.api_page_vacancies,
                 current_page=current_page,
                 page_size=self.ui_page_size,
                 total_vacancies=self.api_total_vacancies,
+                global_offset=self.api_current_page * self.api_page_size,
             )
 
             # Базовое меню
@@ -612,7 +639,6 @@ class JobSearchApp:
                 "header_actions": ("=== Действия с вакансиями ===", None),
                 1: ("Добавить одну вакансию", "add_one_vacancy"),
                 2: ("Добавить всю страницу", "add_page_vacancies"),
-
                 "header_navigation": ("=== Навигация ===", None),
                 3: ("Следующие вакансии", "next_ui_page"),
                 4: ("Предыдущие вакансии", "prev_ui_page"),
@@ -620,41 +646,73 @@ class JobSearchApp:
 
             # Дополняем меню в зависимости от режима
             if self.api_mode == "one_page":
-                menu.update({
-                    "header_api": ("=== API ===", None),
-                    5: ("Загрузить следующую страницу вакансий", "next_api_page"),
-                    6: ("Загрузить предыдущую страницу вакансий" , "prev_api_page"),
-                    7: ("Загрузить все вакансии", "search_all_vacancies"),
-
-                    "header_system": ("=== Система ===", None),
-                    8: ("Вернуться в главное меню", "main_menu"),
-                    9: ("Выход", "exit"),
-                })
+                menu.update(
+                    {
+                        "header_api": ("=== API ===", None),
+                        5: ("Загрузить следующую страницу вакансий", "next_api_page"),
+                        6: ("Загрузить предыдущую страницу вакансий", "prev_api_page"),
+                        7: ("Загрузить все вакансии", "search_all_vacancies"),
+                        "header_system": ("=== Система ===", None),
+                        8: ("Вернуться в главное меню", "main_menu"),
+                        9: ("Выход", "exit"),
+                    }
+                )
             else:  # self.api_mode == "all_vacancies"
-                menu.update({
-                    "header_system": ("=== Система ===", None),
-                    5: ("Вернуться в главное меню", "main_menu"),
-                    6: ("Выход", "exit"),
-                })
+                menu.update(
+                    {
+                        "header_system": ("=== Система ===", None),
+                        5: ("Вернуться в главное меню", "main_menu"),
+                        6: ("Выход", "exit"),
+                    }
+                )
 
             step = self._menu_loop(menu, "")
             if step == "":
                 continue
 
             if step == "next_ui_page":
-                if self.ui_current_index + self.ui_page_size < self.api_total_vacancies:
-                    self.ui_current_index += self.ui_page_size
-                    logger.info("Перешли на следующую страницу, индекс=%s", self.ui_current_index)
-                else:
-                    msg = "Вы на последней странице"
-                    self._io["output"](msg)
-                    logger.info(msg)
+                # 1. Листаем UI
+                self.ui_index += self.ui_page_size
+
+                # 2. Если UI вышел за пределы текущей API‑страницы
+                if self.ui_index >= self.api_total_vacancies:
+
+                    # 2.1. Есть ли следующая API‑страница?
+                    if self.api_current_page + 1 < self.api_total_pages:
+                        self.api_current_page += 1
+
+                        # Загружаем следующую API‑страницу
+                        assert self.api_query_params is not None
+                        assert self.selected_api is not None
+                        assert self.api_query_keyword is not None
+                        assert self.api_current_page is not None
+
+                        self.api_query_params["page"] = self.api_current_page
+                        raw = self.selected_api.get_vacancies(self.api_query_keyword, **self.api_query_params)
+
+                        self.api_page_vacancies = Vacancy.from_list(raw.vacancies)
+                        self.api_total_vacancies = len(self.api_page_vacancies)
+
+                        # UI начинает с нуля
+                        self.ui_index = 0
+                        logger.info("Загружена следующая API‑страница")
+
+                    else:
+                        # 2.2. API закончился
+                        self.ui_index -= self.ui_page_size
+                        msg = "Вы на последней странице"
+                        self._io["output"](msg)
+                        logger.info(msg)
+                    continue
+
+                # 3. UI‑страница в пределах API‑страницы → просто листаем
+                logger.info("Перешли на следующую страницу, индекс=%s", self.ui_index)
                 continue
 
             if step == "prev_ui_page":
-                if self.ui_current_index > 0:
-                    self.ui_current_index = max(0, self.ui_current_index - self.ui_page_size)
-                    logger.info("Перешли на предыдущую страницу, индекс=%s", self.ui_current_index)
+                if self.ui_index > 0:
+                    self.ui_index = max(0, self.ui_index - self.ui_page_size)
+                    logger.info("Перешли на предыдущую страницу, индекс=%s", self.ui_index)
                 else:
                     msg = "Вы на первой странице"
                     self._io["output"](msg)
@@ -666,7 +724,7 @@ class JobSearchApp:
         # сюда никогда не дойдём, но нужно для mypy
         raise RuntimeError("Unreachable")
 
-    def step_next_api_page(self):
+    def step_next_api_page(self) -> str:
         """
         Загружает следующую страницу вакансий из API (режим one_page).
         """
@@ -688,14 +746,16 @@ class JobSearchApp:
         # 3. Переход на следующую страницу
         next_page = self.api_current_page + 1
         self.api_current_page = next_page
+
+        assert self.api_query_params is not None
         self.api_query_params["page"] = next_page
 
         # Сбрасываем UI‑пагинацию
-        self.ui_current_index = 0
+        self.ui_index = 0
 
         return "search_one_page"
 
-    def step_prev_api_page(self):
+    def step_prev_api_page(self) -> str:
         """
         Загружает предыдущую страницу вакансий из API (режим one_page).
         """
@@ -715,35 +775,41 @@ class JobSearchApp:
             return "show_api_vacancies"
 
         # 3. Переход на предыдущую страницу
+        assert self.api_current_page is not None
         prev_page = self.api_current_page - 1
         self.api_current_page = prev_page
+
+        assert self.api_query_params is not None
         self.api_query_params["page"] = prev_page
 
         # Сбрасываем UI‑пагинацию
-        self.ui_current_index = 0
+        self.ui_index = 0
 
         return "search_one_page"
 
-    def step_add_one_vacancy(self):
+    def step_add_one_vacancy(self) -> str:
         """
         Добавляет выбранную пользователем вакансию в локальный список результатов (self.vacancies)
         """
 
         # 1. Диапазон текущей UI‑страницы
-        start = self.ui_current_index
+        start = self.ui_index
         end = min(start + self.ui_page_size, self.api_total_vacancies)
 
         # Вычисляем UI‑страницу так же, как в step_show_api_vacancies
-        current_page = (self.ui_current_index // self.ui_page_size) + 1
+        current_page = (self.ui_index // self.ui_page_size) + 1
 
         # 1. Повторный вывод страницы с вакансиями
         self._io["output"]("Вы остановились на этой странице:")
+        assert self.api_current_page is not None
+        assert self.api_page_size is not None
         render_vacancies_page(
             io=self._io,
             vacancies=self.api_page_vacancies,
             current_page=current_page,
             page_size=self.ui_page_size,
             total_vacancies=self.api_total_vacancies,
+            global_offset=self.api_current_page * self.api_page_size,
         )
 
         # 2. Запрос выбора (локальный номер на странице)
@@ -752,7 +818,7 @@ class JobSearchApp:
             self._io,
             "Какую вакансию хотите сохранить? Введите номер на странице (или отмена): ",
             min_value=1,
-            max_value=max_local
+            max_value=max_local,
         )
 
         if vacancy_num is None:
@@ -774,14 +840,14 @@ class JobSearchApp:
 
         return "show_api_vacancies"
 
-    def step_add_page_vacancies(self):
+    def step_add_page_vacancies(self) -> str:
         """Добавляет все вакансии текущей UI‑страницы в self.vacancies."""
 
         # 1. Определяем диапазон UI‑страницы
-        start = self.ui_current_index
+        start = self.ui_index
         end = min(start + self.ui_page_size, len(self.api_page_vacancies))
 
-        vacancies_to_add = self.api_page_vacancies[start: end]
+        vacancies_to_add = self.api_page_vacancies[start:end]
 
         added = 0
         skipped = 0
@@ -947,6 +1013,7 @@ class JobSearchApp:
                 current_page=self.current_page,
                 page_size=self.page_size,
                 total_vacancies=self.total_vacancies,
+                global_offset=(self.current_page - 1) * self.page_size,
             )
 
             self._io["output"](f"Вы видели {end} из {self.total_vacancies} вакансий. Что хотите сделать дальше?")
@@ -1007,6 +1074,7 @@ class JobSearchApp:
             current_page=self.current_page,
             page_size=self.page_size,
             total_vacancies=self.total_vacancies,
+            global_offset=(self.current_page - 1) * self.page_size,
         )
 
         # 2. Запрос номера вакансии
@@ -1226,6 +1294,7 @@ class JobSearchApp:
                 current_page=self.storage_current_page,
                 page_size=self.page_size,
                 total_vacancies=total_vacancies,
+                global_offset=(self.storage_current_page - 1) * self.page_size,
             )
 
             # После показа — меню действий
@@ -1243,18 +1312,10 @@ class JobSearchApp:
                 continue
 
             if step == "next_page":
-                if end < total_vacancies:
-                    self.storage_current_page += 1
-                else:
-                    self._io["output"]("Вы уже на последней странице архива.")
-                continue
+                self._paginate(total_items=total_vacancies, end_index=end, direction="next")
 
             elif step == "prev_page":
-                if self.storage_current_page > 1:
-                    self.storage_current_page -= 1
-                else:
-                    self._io["output"]("Вы уже на первой странице архива.")
-                continue
+                self._paginate(total_items=total_vacancies, end_index=end, direction="prev")
 
             elif step == "storage_show_details":
                 return "storage_show_details"
@@ -1264,6 +1325,39 @@ class JobSearchApp:
 
         # сюда никогда не дойдём, но нужно для mypy
         raise RuntimeError("Unreachable")
+
+    def _paginate(self, *, total_items: int, end_index: int, direction: str) -> None:
+        """
+        Метод для листания страниц с вакансиями.
+
+        :param total_items: Общее количество вакансий
+        :param end_index: Индекс последнего элемента на текущей странице
+        :param direction: "next" или "prev"
+        """
+
+        # Вычисление общего количества страниц
+        total_pages = (total_items - 1) // self.page_size + 1
+
+        # Единственная страница — сразу выходим
+        if total_pages == 1:
+            self._io["output"]("Это единственная страница. Больше страниц нет.")
+            logger.info(f"Попытка перейти {direction} → это единственная страница")
+            return
+
+        if direction == "next":
+            if end_index < total_items:
+                self.storage_current_page += 1
+                logger.info(f"Переход на следующую страницу: {self.storage_current_page}")
+            else:
+                self._io["output"]("Это последняя страница.")
+                logger.info("Попытка перейти дальше → последняя страница")
+        elif direction == "prev":
+            if self.storage_current_page > 1:
+                self.storage_current_page -= 1
+                logger.info(f"Переход на предыдущую страницу: {self.storage_current_page}")
+            else:
+                self._io["output"]("Это первая страница.")
+                logger.info("Попытка перейти назад → первая страница")
 
     def step_preview(self) -> str:
         """
@@ -1457,6 +1551,7 @@ class JobSearchApp:
             current_page=self.current_page,
             page_size=self.page_size,
             total_vacancies=self.total_vacancies,
+            global_offset=(self.current_page - 1) * self.page_size,
         )
 
         # 3. Запрос выбора
@@ -1576,6 +1671,7 @@ class JobSearchApp:
             current_page=self.storage_current_page,
             page_size=self.page_size,
             total_vacancies=len(vacancies),
+            global_offset=(self.storage_current_page - 1) * self.page_size,
         )
 
         # 4. Запрос номера вакансии
@@ -1641,8 +1737,11 @@ class JobSearchApp:
                 current_page=self.storage_current_page,
                 page_size=self.page_size,
                 total_vacancies=len(vacancies),
+                global_offset=(self.storage_current_page - 1) * self.page_size,
             )
-            logger.debug(f"Отображена страница {self.storage_current_page}: вакансии {start + 1}–{end} из {len(vacancies)}")
+            logger.debug(
+                f"Отображена страница {self.storage_current_page}: вакансии {start + 1}–{end} из {len(vacancies)}"
+            )
 
             # 2. Меню навигации
             menu = {
@@ -1663,20 +1762,10 @@ class JobSearchApp:
             logger.debug(f"Выбор пользователя: {choice}: {menu[choice][1]}")
 
             if choice == 1:  # next
-                if end < len(vacancies):
-                    self.storage_current_page += 1
-                    logger.info(f"Переход на следующую страницу: {self.storage_current_page}")
-                else:
-                    self._io["output"]("Это последняя страница.")
-                    logger.info("Попытка перейти дальше → последняя страница")
+                self._paginate(total_items=len(vacancies), end_index=end, direction="next")
 
             elif choice == 2:  # prev
-                if self.storage_current_page > 1:
-                    self.storage_current_page -= 1
-                    logger.info(f"Переход на предыдущую страницу: {self.storage_current_page}")
-                else:
-                    self._io["output"]("Это первая страница.")
-                    logger.info("Попытка перейти назад → первая страница")
+                self._paginate(total_items=len(vacancies), end_index=end, direction="prev")
 
             elif choice == 3:  # select
                 self.current_storage_list = vacancies
@@ -1780,6 +1869,7 @@ class JobSearchApp:
             raise RuntimeError("Вакансия не выбрана")
 
         vacancy_url = self.current_vacancy.url_vacancy  # url вакансии, которую нужно найти
+        assert vacancy_url is not None
         status, vacancy = self._get_vacancy_from_storage(vacancy_url)
 
         if status == "ok":
@@ -1794,6 +1884,9 @@ class JobSearchApp:
                 "Выбранная вакансия отсутствует в хранилище. Возврат к выбору вакансии (шаг: storage_select_vacancy)"
             )
             return "storage_select_vacancy"
+
+        else:
+            raise RuntimeError(f"Неизвестный статус хранилища: {status}")
 
     def _check_storage_context(self) -> Optional[str]:
         """
