@@ -22,25 +22,25 @@ class Vacancy:
     Класс для создания объектов из вакансий полученных от АПИ.
     """
 
-    name_vacancy: str
-    url_vacancy: str
-    alternate_url: str
+    name_vacancy: Optional[str]
+    url_vacancy: Optional[str]
+    alternate_url: Optional[str]
     salary_from: Optional[int]
     salary_to: Optional[int]
-    currency: str
-    description: str
+    currency: Optional[str]
+    description: Optional[str]
 
     __slots__ = ("name_vacancy", "url_vacancy", "alternate_url", "salary_from", "salary_to", "currency", "description")
 
     def __init__(
         self,
-        name_vacancy: str = None,
-        url_vacancy: str = None,
-        alternate_url: str = None,
+        name_vacancy: Optional[str] = None,
+        url_vacancy: Optional[str] = None,
+        alternate_url: Optional[str] = None,
         salary_from: Optional[int] = None,
         salary_to: Optional[int] = None,
-        currency: str = None,
-        description: str = None,
+        currency: Optional[str] = None,
+        description: Optional[str] = None,
     ) -> None:
         """
         Инициализация настройки атрибутов класса Vacancy.
