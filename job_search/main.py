@@ -1,14 +1,8 @@
-from job_search.api.head_hunter_api import HeadHunterAPI
+from job_search.models.job_search_app import JobSearchApp
 
 
-def main():
-
-    a = HeadHunterAPI()
-    b = a.get_vacancies("python", per_page=2)
-
-    for i in b:
-        print(i)
-        print()
+def main() -> None:
+    JobSearchApp().run()
 
 
 if __name__ == "__main__":
