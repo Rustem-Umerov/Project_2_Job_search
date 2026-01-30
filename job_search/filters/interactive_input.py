@@ -151,7 +151,7 @@ class InteractiveFilterInput:
         logger.info("Переход к первому шагу — запрос минимальной зарплаты.")
         self._io["output"]("✅ Начнём с минимальной зарплаты…")
 
-    def ask_salary_from(self) -> None:
+    def ask_salary_from(self) -> Optional[str]:
         """Запрашивает минимальную зарплату, валидирует ввод и сохраняет результат."""
 
         logger.info("Запрос минимальной зарплаты начат.")
@@ -182,7 +182,7 @@ class InteractiveFilterInput:
                         self._answers["salary_from"] = salary_from
                         logger.info("Минимальная зарплата установлена: %s", salary_from)
                         self._io["output"](f"Минимальная зарплата установлена: {salary_from}")
-                        return
+                        return None
                     else:
                         logger.warning("Ошибка: введена неположительная зарплата: %s", salary_from)
                         self._io["output"]("❌ Ошибка: зарплата должна быть больше нуля. Попробуйте ещё раз.")
