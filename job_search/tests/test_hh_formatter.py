@@ -129,6 +129,4 @@ class TestFormatLinks:
 
     def test_links_invalid_url_type(self) -> None:
         result = HHFilterFormatter._format_links({"url": 123})
-        assert result is not None
-
         assert result is None
