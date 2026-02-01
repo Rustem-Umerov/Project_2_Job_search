@@ -42,7 +42,7 @@ class FilterPreviewRenderer:
             parts.append(f"до {salary_to}")
 
         if parts and currency:
-            parts.append(f" в валюте {currency}")
+            parts.append(f"в валюте {currency}")
 
         preview = f"💰 Зарплата: {' '.join(parts)}" if parts else ""
         logger.info("Обзор зарплаты сформирован: '%s'", preview)
