@@ -2,6 +2,8 @@ from typing import Any
 
 import pytest
 
+from job_search.models.vacancy import Vacancy
+
 
 @pytest.fixture
 def mock_io() -> dict[str, Any]:
@@ -21,3 +23,25 @@ def mock_io() -> dict[str, Any]:
         return inputs.pop(0)
 
     return {"input": fake_input, "output": fake_print, "inputs": inputs, "outputs": outputs}
+
+
+@pytest.fixture
+def vacancy() -> Vacancy:
+    """Базовая вакансия для тестов."""
+
+    return Vacancy(
+        name_vacancy="Python Dev",
+        url_vacancy="http://example.com",
+        alternate_url="http://alt.example.com",
+        salary_from=100000,
+        salary_to=150000,
+        currency="RUR",
+        description="Требования: опыт 3 года",
+    )
+
+
+@pytest.fixture
+def salary_dict() -> dict:
+    """Пример salary блока из API."""
+
+    return {"from": 100000, "to": 150000, "currency": "RUR"}
