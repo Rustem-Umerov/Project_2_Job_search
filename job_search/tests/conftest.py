@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, cast
 from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
@@ -81,16 +81,18 @@ def storage(temp_dir: Path) -> JSONVacancyStorage:
         return s
 
 
-# @pytest.fixture
-# def sample_vacancy() -> Vacancy:
-#     """Пример вакансии."""
-#
-#     return Vacancy(
-#         name_vacancy="Python Dev",
-#         url_vacancy="http://example.com",
-#         alternate_url="http://alt.example.com",
-#         salary_from=100,
-#         salary_to=200,
-#         currency="RUR",
-#         description="Требования"
-#     )
+@pytest.fixture
+def vacancy_factory() -> Callable[..., Vacancy]:
+    """Фабрика для быстрого создания объектов Vacancy с нужными полями."""
+
+    def _make(**kwargs: Any) -> Vacancy:
+        defaults: dict[str, Any] = dict(
+            name_vacancy="Test Vacancy",
+            url_vacancy="http://example.com",
+            salary_from=None,
+            salary_to=None,
+        )
+        defaults.update(kwargs)
+        return Vacancy(**cast(dict[str, Any], defaults))
+
+    return _make
