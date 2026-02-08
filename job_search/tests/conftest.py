@@ -96,3 +96,23 @@ def vacancy_factory() -> Callable[..., Vacancy]:
         return Vacancy(**cast(dict[str, Any], defaults))
 
     return _make
+
+
+@pytest.fixture
+def io_mock() -> dict[str, Any]:
+    """
+    Фикстура создаёт словарь io с моками input/output.
+    Input — возвращает значения из очереди.
+    Output — записывает вывод в список.
+    """
+
+    outputs: list[str] = []
+    queue: list[str] = []
+
+    def fake_input(_: str) -> str:
+        return queue.pop(0)
+
+    def fake_output(msg: str) -> None:
+        outputs.append(msg)
+
+    return {"input": fake_input, "output": fake_output, "queue": queue, "outputs": outputs}
