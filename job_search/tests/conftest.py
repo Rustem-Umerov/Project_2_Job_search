@@ -126,3 +126,18 @@ def temp_logs_dir(tmp_path: Path) -> Path:
     """
 
     return tmp_path
+
+
+@pytest.fixture
+def io_mock_simple() -> dict[str, Any]:
+    """
+    Создаёт io-объект с моками input/output.
+    output сохраняет сообщения в список outputs.
+    """
+
+    outputs: list[str] = []
+
+    def fake_output(msg: str) -> None:
+        outputs.append(msg)
+
+    return {"output": fake_output, "outputs": outputs}
