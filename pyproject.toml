@@ -8,6 +8,9 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "requests (>=2.32.4,<3.0.0)",
+    "python-dotenv (>=1.1.1,<2.0.0)",
+    "pydantic (>=2.0)"
 ]
 
 
@@ -15,6 +18,8 @@ dependencies = [
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
 
+[tool.poetry]
+package-mode = false
 
 [tool.poetry.group.lint.dependencies]
 black = "^25.1.0"
@@ -25,6 +30,7 @@ isort = "^6.0.1"
 
 [tool.poetry.group.dev.dependencies]
 pre-commit = "^3.7.0"
+types-requests = "^2.32.4.20250809"
 
 
 [tool.poetry.group.test.dependencies]
@@ -42,6 +48,7 @@ exclude = '''
 
 
 [tool.isort]
+profile = "black"
 line_length = 119
 
 
